@@ -1,0 +1,202 @@
+"""
+TraceLearn — starter unit tests for the deterministic trigger layer and the
+plan validator. Both modules are pure (no DB, no LLM), so these run standalone.
+
+Run:
+    cd app/backend
+    python tests/test_triggers_validator.py
+"""
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+# Run as a plain script (not `python -m`): put backend/ on sys.path so
+# `agent.triggers` / `agent.validator` resolve the same way the app does.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from agent.triggers import evaluate_triggers
+from agent.validator import validate_plan
+
+
+# ---------------------------------------------------------------------------
+# triggers.evaluate_triggers
+# ---------------------------------------------------------------------------
+def test_explicit_request_always_fires():
+    result = evaluate_triggers(
+        progress={"tasks_due": 0, "tasks_incomplete": 0},
+        concept_mastery={},
+        recent_evidence=[],
+        explicit_request=True,
+    )
+    assert result.fired is True
+    assert result.reason == "explicit_user_request"
+
+
+def test_insufficient_evidence_blocks_all_other_triggers():
+    result = evaluate_triggers(
+        progress={"tasks_due": 10, "tasks_incomplete": 10},  # would trip behind_schedule
+        concept_mastery={1: 0.1},                             # would trip low_mastery
+        recent_evidence=[{"type": "task_done"}],               # below min_evidence_events (3)
+    )
+    assert result.fired is False
+    assert result.reason == "insufficient_evidence"
+
+
+def test_behind_schedule_fires_above_threshold():
+    result = evaluate_triggers(
+        progress={"tasks_due": 4, "tasks_incomplete": 2},  # 50% > 25% threshold
+        concept_mastery={},
+        recent_evidence=[{"type": "task_done"}] * 3,
+    )
+    assert result.fired is True
+    assert result.reason == "behind_schedule"
+
+
+def test_low_mastery_fires_below_threshold():
+    result = evaluate_triggers(
+        progress={"tasks_due": 4, "tasks_incomplete": 0},
+        concept_mastery={7: 0.2},  # below 0.40 threshold
+        recent_evidence=[{"type": "task_done"}] * 3,
+    )
+    assert result.fired is True
+    assert result.reason == "low_mastery"
+    assert 7 in result.detail["weak_concepts"]
+
+
+def test_quiz_fail_fires_below_threshold():
+    result = evaluate_triggers(
+        progress={"tasks_due": 4, "tasks_incomplete": 0},
+        concept_mastery={},
+        recent_evidence=[
+            {"type": "task_done"},
+            {"type": "task_done"},
+            {"type": "quiz_result", "concept_id": 3, "payload": {"score": 0.3}},
+        ],
+    )
+    assert result.fired is True
+    assert result.reason == "quiz_fail"
+
+
+def test_no_trigger_when_all_signals_healthy():
+    result = evaluate_triggers(
+        progress={"tasks_due": 4, "tasks_incomplete": 0},
+        concept_mastery={1: 0.9},
+        recent_evidence=[
+            {"type": "task_done"},
+            {"type": "task_done"},
+            {"type": "quiz_result", "concept_id": 1, "payload": {"score": 0.9}},
+        ],
+    )
+    assert result.fired is False
+    assert result.reason == "no_trigger"
+
+
+# ---------------------------------------------------------------------------
+# validator.validate_plan — the 5 rejection rules
+# ---------------------------------------------------------------------------
+def _valid_task(concept_id=1, day="2026-08-01", minutes=60):
+    return {"concept_id": concept_id, "day": day, "description": "study", "est_minutes": minutes}
+
+
+def test_validator_accepts_a_reasonable_plan():
+    plan = {"tasks": [_valid_task(day="2026-08-01"), _valid_task(day="2026-08-03")]}
+    result = validate_plan(
+        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1}, weak_concept_ids=set(),
+    )
+    assert result.ok is True
+    assert result.errors == []
+
+
+def test_validator_rejects_zero_tasks():
+    result = validate_plan(
+        plan={"tasks": []}, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1},
+    )
+    assert result.ok is False
+    assert any("zero tasks" in e for e in result.errors)
+
+
+def test_validator_rejects_overloaded_week():
+    # 10 tasks * 600 min each, single week window -> way over weekly_hours
+    plan = {"tasks": [_valid_task(day="2026-07-26", minutes=600) for _ in range(10)]}
+    result = validate_plan(
+        plan=plan, weekly_hours=6, deadline="2026-08-01", today="2026-07-25",
+        valid_concept_ids={1},
+    )
+    assert result.ok is False
+    assert any("exceed available" in e for e in result.errors)
+
+
+def test_validator_rejects_task_after_deadline():
+    plan = {"tasks": [_valid_task(day="2026-09-01")]}
+    result = validate_plan(
+        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1},
+    )
+    assert result.ok is False
+    assert any("after deadline" in e for e in result.errors)
+
+
+def test_validator_rejects_task_in_the_past():
+    plan = {"tasks": [_valid_task(day="2026-07-01")]}
+    result = validate_plan(
+        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1},
+    )
+    assert result.ok is False
+    assert any("in the past" in e for e in result.errors)
+
+
+def test_validator_rejects_unconfirmed_concept():
+    plan = {"tasks": [_valid_task(concept_id=99, day="2026-08-01")]}
+    result = validate_plan(
+        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1},  # 99 is not in the confirmed set
+    )
+    assert result.ok is False
+    assert any("invalid/unconfirmed concept_id" in e for e in result.errors)
+
+
+def test_validator_rejects_dropped_weak_concept_coverage():
+    plan = {"tasks": [_valid_task(concept_id=1, day="2026-08-01")]}
+    result = validate_plan(
+        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1, 2}, weak_concept_ids={2},  # concept 2 is weak but never covered
+    )
+    assert result.ok is False
+    assert any("drops all coverage" in e for e in result.errors)
+
+
+ALL_TESTS = [
+    test_explicit_request_always_fires,
+    test_insufficient_evidence_blocks_all_other_triggers,
+    test_behind_schedule_fires_above_threshold,
+    test_low_mastery_fires_below_threshold,
+    test_quiz_fail_fires_below_threshold,
+    test_no_trigger_when_all_signals_healthy,
+    test_validator_accepts_a_reasonable_plan,
+    test_validator_rejects_zero_tasks,
+    test_validator_rejects_overloaded_week,
+    test_validator_rejects_task_after_deadline,
+    test_validator_rejects_task_in_the_past,
+    test_validator_rejects_unconfirmed_concept,
+    test_validator_rejects_dropped_weak_concept_coverage,
+]
+
+
+if __name__ == "__main__":
+    passed = 0
+    failed = 0
+    for test in ALL_TESTS:
+        try:
+            test()
+            print(f"PASS  {test.__name__}")
+            passed += 1
+        except AssertionError as e:
+            print(f"FAIL  {test.__name__}: {e}")
+            failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    if failed:
+        raise SystemExit(1)

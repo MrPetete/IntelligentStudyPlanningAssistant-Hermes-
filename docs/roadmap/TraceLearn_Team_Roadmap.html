@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TraceLearn — Team Roadmap</title>
+<style>
+  :root{
+    --bg:#0f1420; --panel:#161d2e; --panel2:#1c2740; --ink:#e8edf7; --muted:#9aa8c4;
+    --line:#28324c; --brand:#5b8cff; --brand2:#7c5cff; --accent:#38d9a9; --warn:#ffb454; --danger:#ff6b6b;
+    --chipA:#5b8cff; --chipB:#38d9a9; --chipC:#ffb454;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,"PingFang SC","Microsoft YaHei",sans-serif;
+    background:var(--bg);color:var(--ink);line-height:1.6;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  header.hero{background:radial-gradient(1200px 500px at 20% -10%,rgba(124,92,255,.35),transparent),
+    radial-gradient(1000px 400px at 90% 0%,rgba(56,217,169,.18),transparent),var(--panel);
+    border-bottom:1px solid var(--line);padding:64px 0 52px}
+  .badge{display:inline-block;font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);
+    border:1px solid var(--line);padding:5px 12px;border-radius:999px;background:rgba(56,217,169,.08)}
+  h1{font-size:48px;margin:18px 0 6px;line-height:1.05;font-weight:800;
+    background:linear-gradient(90deg,#fff,#9db6ff);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{font-size:19px;color:var(--muted);font-weight:500;margin:0 0 18px}
+  .vp{font-size:17px;max-width:760px;color:var(--ink);background:var(--panel2);border:1px solid var(--line);
+    border-left:3px solid var(--brand);padding:16px 20px;border-radius:0 12px 12px 0}
+  nav.toc{position:sticky;top:0;z-index:20;background:rgba(15,20,32,.9);backdrop-filter:blur(8px);
+    border-bottom:1px solid var(--line);padding:10px 0}
+  nav.toc .wrap{display:flex;flex-wrap:wrap;gap:6px}
+  nav.toc a{font-size:12.5px;color:var(--muted);text-decoration:none;padding:6px 11px;border-radius:8px;white-space:nowrap}
+  nav.toc a:hover{color:var(--ink);background:var(--panel2)}
+  section{padding:46px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:14px;letter-spacing:.16em;text-transform:uppercase;color:var(--brand);margin:0 0 4px}
+  h2+.h{font-size:29px;font-weight:750;margin:0 0 22px}
+  h3{font-size:18px;margin:26px 0 10px}
+  p{color:#d3dbec}
+  .grid{display:grid;gap:16px}
+  .g2{grid-template-columns:1fr 1fr}
+  .g3{grid-template-columns:1fr 1fr 1fr}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px}
+  .card h4{margin:0 0 8px;font-size:16px}
+  .card p{margin:0;color:var(--muted);font-size:14px}
+  .muted{color:var(--muted)}
+  .pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 9px;border-radius:999px;margin-right:6px}
+  .pA{background:rgba(91,140,255,.16);color:#9db6ff;border:1px solid rgba(91,140,255,.4)}
+  .pB{background:rgba(56,217,169,.14);color:#5be3bd;border:1px solid rgba(56,217,169,.4)}
+  .pC{background:rgba(255,180,84,.14);color:#ffce8a;border:1px solid rgba(255,180,84,.4)}
+  table{width:100%;border-collapse:collapse;margin-top:8px;font-size:14px;overflow:hidden;border-radius:12px}
+  th,td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:var(--panel2);color:var(--ink);font-weight:650;font-size:12.5px;letter-spacing:.03em}
+  tr:last-child td{border-bottom:none}
+  td{color:#cfd8ec}
+  .flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:8px 0}
+  .node{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:10px 14px;font-size:13.5px;font-weight:600}
+  .node.hi{border-color:var(--brand);box-shadow:0 0 0 1px rgba(91,140,255,.3) inset}
+  .node.act{border-color:var(--accent)}
+  .arrow{color:var(--brand);font-weight:800}
+  .down{display:block;color:var(--brand);font-weight:800;margin:2px 0 2px 22px}
+  .split{display:grid;grid-template-columns:1fr 1fr;gap:0;border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .split>div{padding:16px 18px}
+  .split .l{background:rgba(91,140,255,.06);border-right:1px solid var(--line)}
+  .split .r{background:rgba(56,217,169,.05)}
+  .split h4{margin:0 0 10px;font-size:14px;letter-spacing:.05em;text-transform:uppercase}
+  .split ul{margin:0;padding-left:18px}.split li{margin:6px 0;font-size:13.5px;color:#cfd8ec}
+  .tl{position:relative;margin-left:8px;padding-left:26px;border-left:2px solid var(--line)}
+  .tl .item{position:relative;padding:0 0 22px}
+  .tl .dot{position:absolute;left:-34px;top:2px;width:14px;height:14px;border-radius:50%;background:var(--brand);border:3px solid var(--bg)}
+  .tl .item.p1 .dot{background:var(--accent)} .tl .item.p2 .dot{background:var(--warn)} .tl .item.p3 .dot{background:var(--brand2)}
+  .tag{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+  .moscow{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  .box{border:1px solid var(--line);border-radius:12px;padding:16px;background:var(--panel)}
+  .box.must{border-top:3px solid var(--accent)} .box.should{border-top:3px solid var(--brand)}
+  .box.could{border-top:3px solid var(--warn)} .box.future{border-top:3px solid var(--brand2)}
+  .box h4{margin:0 0 10px} .box ul{margin:0;padding-left:18px} .box li{margin:5px 0;font-size:13.5px;color:#cfd8ec}
+  .demo{counter-reset:step}
+  .demo .step{position:relative;background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:14px 16px 14px 56px;margin-bottom:10px}
+  .demo .step:before{counter-increment:step;content:counter(step);position:absolute;left:14px;top:14px;
+    width:28px;height:28px;border-radius:50%;background:var(--brand);color:#fff;font-weight:800;
+    display:flex;align-items:center;justify-content:center;font-size:14px}
+  .demo .step b{color:#fff}
+  footer{padding:36px 0;color:var(--muted);font-size:13px;text-align:center}
+  .principle{display:flex;gap:12px;align-items:flex-start;margin:10px 0}
+  .principle .n{flex:none;width:26px;height:26px;border-radius:8px;background:var(--brand2);color:#fff;
+    font-weight:800;display:flex;align-items:center;justify-content:center;font-size:13px}
+  @media(max-width:820px){.g2,.g3,.moscow,.split{grid-template-columns:1fr}h1{font-size:36px}}
+</style>
+</head>
+<body>
+<header class="hero">
+  <div class="wrap">
+    <span class="badge">Team Alignment Document · Foundation Frozen</span>
+    <h1>TraceLearn</h1>
+    <p class="sub">Material-Grounded Personal Learning Path Agent</p>
+    <div class="vp">TraceLearn transforms a learner's goal and learning materials into an executable roadmap,
+      then continuously improves that roadmap using real learning evidence — while explaining every change.</div>
+  </div>
+</header>
+
+<nav class="toc"><div class="wrap">
+  <a href="#overview">Overview</a>
+  <a href="#problem">Problem</a>
+  <a href="#value">Value</a>
+  <a href="#journey">User Journey</a>
+  <a href="#concept">Concept Map</a>
+  <a href="#arch">Architecture</a>
+  <a href="#agent">The Agent</a>
+  <a href="#scope">MVP Scope</a>
+  <a href="#team">Team</a>
+  <a href="#phases">48h Sprint</a>
+  <a href="#demo">Demo</a>
+  <a href="#future">Future</a>
+</div></nav>
+
+<section id="overview"><div class="wrap">
+  <h2>01 · Overview</h2><div class="h">What we are building</div>
+  <p>TraceLearn is a learning Agent for a university production internship. It is not a commercial launch — it is
+  optimised for a working demo, explainability, technical correctness, defence quality, and portfolio value.
+  The product is not "AI makes a study plan" (already common). The product is a
+  <b>material-grounded learning Agent that creates, tracks, and explains the evolution of a learner's path.</b></p>
+  <div class="grid g3" style="margin-top:18px">
+    <div class="card"><h4>The question we answer</h4><p>"Why did my learning plan change?" — not only "what should I study?"</p></div>
+    <div class="card"><h4>The differentiator</h4><p>Evidence-driven, material-grounded, explainable learning path evolution.</p></div>
+    <div class="card"><h4>The team</h4><p>Three members, one short internship, one small complete system.</p></div>
+  </div>
+</div></section>
+
+<section id="problem"><div class="wrap">
+  <h2>02 · Problem</h2><div class="h">Why existing tools fall short</div>
+  <div class="grid g2">
+    <div class="card"><h4>Generic AI planners</h4><p>A single prompt produces a study plan. It ignores the learner's actual course
+      materials and never adapts to what the learner actually does. "AI makes a plan" is a commodity.</p></div>
+    <div class="card"><h4>No accountability</h4><p>When a plan changes, learners get a new plan with no reason. There is no
+      link between evidence, the decision, and the change. Trust and learning both suffer.</p></div>
+  </div>
+  <p style="margin-top:16px">TraceLearn closes the loop that others leave open: <b>plan → study → evidence → visible, justified adaptation.</b></p>
+</div></section>
+
+<section id="value"><div class="wrap">
+  <h2>03 · Value Proposition</h2><div class="h">The trace is the product</div>
+  <div class="flow">
+    <span class="node">Evidence</span><span class="arrow">→</span>
+    <span class="node">Agent reasoning</span><span class="arrow">→</span>
+    <span class="node hi">New plan version</span><span class="arrow">→</span>
+    <span class="node">Explanation</span><span class="arrow">→</span>
+    <span class="node">Version history</span>
+  </div>
+  <div class="grid g3" style="margin-top:18px">
+    <div class="card"><h4>Material-grounded</h4><p>Plans, questions and tasks are built from the learner's own syllabus concepts.</p></div>
+    <div class="card"><h4>Evidence-driven</h4><p>Real study behaviour — completed tasks, quiz results, time — drives replanning.</p></div>
+    <div class="card"><h4>Explainable</h4><p>Every plan change is traced to specific concepts and specific evidence.</p></div>
+  </div>
+  <div class="card" style="margin-top:16px;border-left:3px solid var(--brand2)">
+    <span class="pill" style="background:rgba(124,92,255,.16);color:#b7a6ff;border:1px solid rgba(124,92,255,.4)">Supporting capability</span>
+    <h4 style="margin-top:10px">Cross-language material grounding</h4>
+    <p>Study material in one language, explanations in another — with technical terms preserved. The concept map is
+    language-neutral: the <b>canonical term</b> is the grounding anchor, while explanations, tasks and the Agent's
+    reasoning adapt to the learner's language. Two languages (Chinese, English), content-only. This sharpens the
+    material-grounded idea; it is not the product identity.</p>
+  </div>
+</div></section>
+
+<section id="journey"><div class="wrap">
+  <h2>04 · User Journey</h2><div class="h">Onboarding (Option C hybrid)</div>
+  <p class="muted">Rule: never show a roadmap before concept extraction, never make the user wait on a blocking spinner.
+  Aha moment must land within about three minutes.</p>
+  <div class="tl" style="margin-top:18px">
+    <div class="item"><span class="dot"></span><div class="tag">Step 1 · ~10s</div><h4 style="margin:2px 0">Goal setup</h4>
+      <p class="muted">Enter goal, deadline, weekly hours. Optionally drop one PDF/TXT — processing starts in the background.</p></div>
+    <div class="item"><span class="dot"></span><div class="tag">Step 2 · while processing</div><h4 style="margin:2px 0">Warm-up questions</h4>
+      <p class="muted">2–3 lightweight self-reflection questions. Context only — <b>not</b> the diagnostic, not plan input.</p></div>
+    <div class="item"><span class="dot"></span><div class="tag">Step 3</div><h4 style="margin:2px 0">Concept map appears</h4>
+      <p class="muted">The AI extracts a concept map from the material (or from the goal topic if no material).</p></div>
+    <div class="item"><span class="dot"></span><div class="tag">Step 4 · human-in-the-loop</div><h4 style="margin:2px 0">Confirm / edit concepts</h4>
+      <p class="muted">The learner reviews and edits the concept map. The confirmed map is authoritative.</p></div>
+    <div class="item"><span class="dot"></span><div class="tag">Step 5</div><h4 style="margin:2px 0">Diagnostic</h4>
+      <p class="muted">5–8 concept-targeted questions produce a per-concept ability signal (heuristic, not a measurement).</p></div>
+    <div class="item p1"><span class="dot"></span><div class="tag">Step 6 · aha moment</div><h4 style="margin:2px 0">Roadmap Version 1</h4>
+      <p class="muted">A focused roadmap with concept-tagged daily tasks and flagged weak areas.</p></div>
+  </div>
+</div></section>
+<section id="concept"><div class="wrap">
+  <h2>05 · Concept Map</h2><div class="h">The spine that connects everything</div>
+  <p>The concept map extracted from the material is a first-class database entity. It is the shared key that links
+  every part of the system. This is what makes replanning pedagogically meaningful instead of mere schedule juggling.</p>
+  <div class="flow" style="margin:14px 0">
+    <span class="node">Material</span><span class="arrow">→</span>
+    <span class="node hi">Concepts</span><span class="arrow">→</span>
+    <span class="node">Diagnostic questions</span><span class="arrow">→</span>
+    <span class="node">Learning tasks</span><span class="arrow">→</span>
+    <span class="node">Evidence</span><span class="arrow">→</span>
+    <span class="node act">Agent decisions</span>
+  </div>
+  <h3>Worked example — the whole product in one row</h3>
+  <table>
+    <tr><th>Concept</th><th>Diagnostic</th><th>Task</th><th>Evidence</th><th>Agent decision</th></tr>
+    <tr>
+      <td>Database normalization</td>
+      <td>Student fails the normalization question</td>
+      <td>Add normalization practice</td>
+      <td>Quiz score stays low</td>
+      <td>Create extra normalization remediation tasks — and explain why</td>
+    </tr>
+  </table>
+  <p class="muted" style="margin-top:14px">With material: targeted diagnosis, concept-linked tasks, focused roadmap, meaningful replanning.
+  Without material: the system falls back to goal-topic concepts and still works end-to-end.</p>
+  <div class="split" style="margin-top:16px">
+    <div class="l"><h4 style="color:#9db6ff">Language-neutral anchor</h4>
+      <ul>
+        <li><b>canonical_term</b> — the technical term preserved verbatim (e.g. "Normalization")</li>
+        <li>the join key across diagnostics, tasks, evidence, decisions</li>
+        <li>used in the Agent's reasoning and tool arguments — always English</li>
+      </ul></div>
+    <div class="r"><h4 style="color:#5be3bd">Adapts to the learner</h4>
+      <ul>
+        <li><b>explanation</b> — written in the learner's language</li>
+        <li>task descriptions, diagnostic questions, reasoning shown to the user</li>
+        <li>Chinese or English; technical terms stay in their original form</li>
+      </ul></div>
+  </div>
+</div></section>
+
+<section id="arch"><div class="wrap">
+  <h2>06 · System Architecture</h2><div class="h">How the pieces fit</div>
+  <div class="grid g3">
+    <div class="card"><span class="pill pB">Frontend</span><h4 style="margin-top:10px">Vue / React + ECharts</h4>
+      <p>Onboarding, tasks, roadmap, version history, diff view, tool-trace viewer, dashboard.</p></div>
+    <div class="card"><span class="pill pA">Backend</span><h4 style="margin-top:10px">Python + FastAPI</h4>
+      <p>REST API, trigger layer, plan validator, versioning, decision logging.</p></div>
+    <div class="card"><span class="pill pC">Data</span><h4 style="margin-top:10px">SQLite</h4>
+      <p>Goals, concepts, diagnostics, plan versions, tasks, evidence, agent decisions.</p></div>
+  </div>
+  <h3>The Agent's tools</h3>
+  <div class="split">
+    <div class="l"><h4 style="color:#9db6ff">Read tools (safe, used freely)</h4>
+      <ul>
+        <li>get_learner_state</li>
+        <li>get_current_plan</li>
+        <li>get_progress_summary</li>
+        <li>get_evidence_since_last_plan</li>
+        <li>search_learning_material</li>
+      </ul></div>
+    <div class="r"><h4 style="color:#5be3bd">Write tools (few, guarded)</h4>
+      <ul>
+        <li>create_plan_version</li>
+        <li>record_agent_decision</li>
+      </ul>
+      <p class="muted" style="font-size:12.5px;margin-top:10px">A small, guarded write surface is intentional — and a defence point.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="agent"><div class="wrap">
+  <h2>07 · The Agent</h2><div class="h">Why this is a real Agent, not a chatbot</div>
+  <p>A wrapper is one prompt in, one answer out. TraceLearn's Agent reads external state through tools, decides whether
+  a plan needs to change, and acts on persistent state through a triggered loop. We use <b>deterministic
+  orchestration</b>: code calls the read tools in a fixed order and the LLM owns a single decision point
+  (change / no-change, the reasoning, and the proposed plan). This is genuinely tool-using and agentic, without
+  the fragility of free-form tool looping — a stronger, more defensible story than unbounded autonomy.</p>
+  <div class="flow" style="margin:14px 0">
+    <span class="node">Evidence</span><span class="arrow">→</span>
+    <span class="node">Deterministic trigger</span><span class="arrow">→</span>
+    <span class="node hi">Hermes reasoning</span><span class="arrow">→</span>
+    <span class="node">Validator</span><span class="arrow">→</span>
+    <span class="node act">New version + decision</span>
+  </div>
+  <h3>The control split</h3>
+  <div class="split">
+    <div class="l"><h4 style="color:#9db6ff">Deterministic code controls</h4>
+      <ul>
+        <li>When the Agent is invoked (trigger thresholds)</li>
+        <li>Validation of any proposed plan (dates, hours, concepts)</li>
+        <li>Persistence, versioning, parent linkage</li>
+        <li>Guardrails — reject impossible schedules</li>
+      </ul></div>
+    <div class="r"><h4 style="color:#5be3bd">The LLM decides</h4>
+      <ul>
+        <li>Whether the plan needs to change</li>
+        <li>What specifically to change</li>
+        <li>The natural-language justification</li>
+        <li>Interpretation of ambiguous evidence</li>
+      </ul></div>
+  </div>
+  <p style="margin-top:14px"><b>One-line defence:</b> we never let the LLM run unbounded — deterministic triggers decide when it wakes up,
+  and deterministic validators check everything it proposes before it is persisted.</p>
+</div></section>
+<section id="scope"><div class="wrap">
+  <h2>08 · MVP Scope</h2><div class="h">A small complete system beats a large unfinished one</div>
+  <div class="moscow">
+    <div class="box must"><h4>✅ Must Have</h4><ul>
+      <li>Goal input + deadline</li>
+      <li>Optional PDF/TXT upload + extraction</li>
+      <li>Concept map generation</li>
+      <li>Concept confirmation (human-in-the-loop)</li>
+      <li>Initial diagnostic</li>
+      <li>Roadmap generation</li>
+      <li>Task tracking + evidence recording</li>
+      <li>Hermes Agent reasoning</li>
+      <li>Plan version creation</li>
+      <li>Evidence-linked explanation</li>
+      <li>Version history</li>
+    </ul></div>
+    <div class="box should"><h4>🔵 Should Have</h4><ul>
+      <li>Basic dashboard</li>
+      <li>Concept weakness visualization</li>
+      <li>Simple knowledge notebook</li>
+      <li>Concept explanation mode</li>
+      <li>Cross-language grounding (content-only, EN/ZH)</li>
+    </ul></div>
+    <div class="box could"><h4>🟡 Could Have</h4><ul>
+      <li>Rich version-comparison UI</li>
+      <li>Retrieval-based Q&A (only real RAG use)</li>
+      <li>Extra quiz generation as evidence</li>
+    </ul></div>
+    <div class="box future"><h4>🟣 Future Only (document, do not build)</h4><ul>
+      <li>Multiple documents / semester library</li>
+      <li>OCR, PPT / DOCX processing</li>
+      <li>Calendar integration</li>
+      <li>Career planning, campus integration</li>
+      <li>Mobile app, multi-agent system</li>
+    </ul></div>
+  </div>
+</div></section>
+
+<section id="team"><div class="wrap">
+  <h2>09 · Team Responsibilities</h2><div class="h">Three members, clear ownership</div>
+  <div class="grid g3">
+    <div class="card"><span class="pill pA">Member A</span><h4 style="margin-top:10px">AI Agent + Backend <span style="font-size:11px;color:var(--muted)">· tech lead</span></h4>
+      <p>Hermes integration, FastAPI, database, the 7 tools, trigger layer, validator, versioning, replanning logic. Also owns the frozen contracts and integration order.</p></div>
+    <div class="card"><span class="pill pB">Member B</span><h4 style="margin-top:10px">Frontend + Product</h4>
+      <p>User flow, UI, dashboard, version comparison, tool-trace viewer, visualization.</p></div>
+    <div class="card"><span class="pill pC">Member C</span><h4 style="margin-top:10px">Data + Material + Testing</h4>
+      <p>Document processing, concept extraction, diagnostic questions, evidence shaping, testing, demo scenarios + recorded fallback.</p></div>
+  </div>
+  <p class="muted" style="margin-top:14px">Contract freeze in hour 1: the 3 key JSON shapes are agreed by all three before real logic is built, so no one is blocked.</p>
+</div></section>
+
+<section id="phases"><div class="wrap">
+  <h2>10 · Execution Plan</h2><div class="h">48-hour MVP sprint (immediate execution)</div>
+  <p class="muted" style="margin-bottom:16px">Phase 0 (the code seed) is already delivered. What follows is the approved 48-hour build.
+  Hours are guides, not gates. Build the loop from both ends toward the middle: validator + triggers early
+  (safe, testable), the live LLM decision point last (behind a mock until integration).</p>
+  <div class="tl">
+    <div class="item"><span class="dot"></span><div class="tag">Hours 0–2 · all</div><h4 style="margin:2px 0">Freeze contracts, stand up stubs</h4>
+      <p class="muted">Freeze the 3 JSON shapes (PlanVersionOut, AgentDecisionOut+trace, ConceptOut). Run the seed backend;
+      all endpoints return mock data. After this, everyone works in parallel.</p></div>
+    <div class="item p1"><span class="dot"></span><div class="tag">Hours 2–8 · parallel</div><h4 style="margin:2px 0">Build against mocks</h4>
+      <p class="muted"><span class="pill pA">A</span> validator + triggers (unit-tested) + orchestrator skeleton
+      <span class="pill pB">B</span> screens against mocks <span class="pill pC">C</span> extraction + the 3 generation prompts vs MOCK_LLM.</p></div>
+    <div class="item p1"><span class="dot"></span><div class="tag">Hours 8–20 · integrate</div><h4 style="margin:2px 0">Real LLM, one seam at a time</h4>
+      <p class="muted">Concepts → diagnostic → roadmap wired to real Hermes. A wires real tools + append-only versioning.</p></div>
+    <div class="item p2"><span class="dot"></span><div class="tag">Hours 20–32 · the loop</div><h4 style="margin:2px 0">Close the agent loop end-to-end</h4>
+      <p class="muted">Simulate → trigger → decision → V2 → record. B builds the diff + tool-trace viewer against the real decision JSON.</p></div>
+    <div class="item p2"><span class="dot"></span><div class="tag">Hours 32–42 · harden</div><h4 style="margin:2px 0">Seed, fallback, bilingual field</h4>
+      <p class="muted">Harden seed + simulate; build the recorded/seeded fallback demo; wire the explanation-language field.</p></div>
+    <div class="item p3"><span class="dot"></span><div class="tag">Hours 42–48 · freeze</div><h4 style="margin:2px 0">Rehearse twice, fix demo-path only</h4>
+      <p class="muted">Freeze scope. Rehearse the one normalization-remediation scenario twice. Fix only demo-path bugs.</p></div>
+  </div>
+
+  <h3 style="margin-top:26px">Failure plan (if behind schedule)</h3>
+  <div class="grid g3">
+    <div class="card"><h4>−25% time</h4><p>Cut live bilingual demo, live upload processing, dashboard charts; use seeded concepts + fixed diagnostic. Keep confirm → V1 → simulate → V2 → diff → trace.</p></div>
+    <div class="card"><h4>−50% time</h4><p>Seed everything before the agent. Only live LLM call = the decision (change/no-change + reasoning for V2). Demo starts at "here is V1".</p></div>
+    <div class="card"><h4>Irreducible floor</h4><p>Seeded V1 + simulate button + one live agent decision → V2 + reasoning + diff + trace. If that runs, the differentiator is proven.</p></div>
+  </div>
+</div></section>
+
+<section id="demo"><div class="wrap">
+  <h2>11 · Demo Scenario</h2><div class="h">The five minutes that decide the grade</div>
+  <div class="demo">
+    <div class="step"><b>Show the grounded plan.</b> A roadmap built from the student's own slides — Version 1, with concept-tagged tasks.</div>
+    <div class="step"><b>Inject evidence live.</b> Use the simulate control: fail a normalization quiz, mark normalization tasks incomplete, advance the clock.</div>
+    <div class="step"><b>The trigger fires.</b> Deterministic code detects the learner is behind / weak on a concept and wakes the Agent.</div>
+    <div class="step"><b>Show the tool trace.</b> The Agent reads state, reasons over the concept, and proposes a change — every tool call is visible in order.</div>
+    <div class="step"><b>Version 2 is created.</b> Side-by-side diff vs Version 1: normalization remediation tasks added.</div>
+    <div class="step"><b>Answer the question.</b> The written explanation says exactly why the plan changed, cited to concept and evidence.</div>
+  </div>
+  <p class="muted" style="margin-top:12px">A recorded / seeded fallback path exists so the demo never depends on a live model call at the worst moment.</p>
+  <div class="card" style="margin-top:14px;border-left:3px solid var(--brand2)">
+    <h4>Bilingual variant</h4>
+    <p class="muted">Same flow, one field changed: upload an <b>English</b> database PDF with explanation language set to Chinese.
+    The concept map keeps English canonical terms while explanations, tasks and the Agent's reasoning appear in Chinese —
+    showing cross-language grounding with no extra demo machinery.</p>
+  </div>
+</div></section>
+
+<section id="future"><div class="wrap">
+  <h2>12 · Future Roadmap</h2><div class="h">Deliberately out of scope for now</div>
+  <div class="grid g3">
+    <div class="card"><h4>Knowledge scale</h4><p>Multiple documents, full semester library, better RAG, OCR, PPT/DOCX.</p></div>
+    <div class="card"><h4>Ecosystem</h4><p>Calendar integration, campus integration, mobile app.</p></div>
+    <div class="card"><h4>Depth</h4><p>Career skill roadmap, learning analytics at scale, multi-agent system.</p></div>
+    <div class="card"><h4>Language</h4><p>Full UI translation / i18n framework and additional languages. The MVP does content-only bilingual (EN/ZH), no interface translation.</p></div>
+  </div>
+
+  <h3 style="margin-top:30px">Final principles</h3>
+  <div class="principle"><span class="n">1</span><p style="margin:0">A small complete system beats a large unfinished system.</p></div>
+  <div class="principle"><span class="n">2</span><p style="margin:0">The Agent must demonstrate: read state → reason → use tools → change state → record decision.</p></div>
+  <div class="principle"><span class="n">3</span><p style="margin:0">We never claim perfect assessment, human-level understanding, or autonomous intelligence.</p></div>
+  <div class="principle"><span class="n">4</span><p style="margin:0">We say "Learner State Model", never vague "memory".</p></div>
+  <div class="principle"><span class="n">5</span><p style="margin:0">Material grounding + evidence trace is the core product identity.</p></div>
+</div></section>
+<footer>
+  <div class="wrap">TraceLearn — Team Roadmap · Foundation frozen (package v1.0) · Change control via the Decision Register.</div>
+</footer>
+</body>
+</html>

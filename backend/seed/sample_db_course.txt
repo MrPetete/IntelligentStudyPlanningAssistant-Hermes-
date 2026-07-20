@@ -1,0 +1,15 @@
+SAMPLE DATABASE COURSE (stand-in for an uploaded PDF)
+
+This plain-text file stands in for the demo's uploaded lecture material.
+In Phase 0 there is no real extraction — the concept map is seeded directly
+(see seed.py / llm_client mock). Keep this file small and text-based.
+
+Week 1 — Relational model, keys, functional dependencies
+Week 2 — Normalization (1NF, 2NF, 3NF, BCNF), decomposition
+Week 3 — Indexing (B-trees, hash indexes), when indexes help
+Week 4 — Transactions and ACID, isolation levels
+Week 5 — SQL joins (inner, outer, semi), join algorithms
+Week 6 — Query optimization, cost estimation
+
+Emphasis (per the instructor): Normalization is foundational and underpins
+later topics; students commonly struggle with 3NF decomposition.
