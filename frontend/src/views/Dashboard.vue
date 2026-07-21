@@ -16,25 +16,30 @@ const plan = ref(null)
 const versions = ref([])
 
 async function load() {
-  await refreshVersions(store.goalId)
-  conceptMeta.value = store.concepts
-  versions.value = store.versions
-  plan.value = store.currentPlan
+  loading.value = true
+  try {
+    await refreshVersions(store.goalId)
+    conceptMeta.value = store.concepts
+    versions.value = store.versions
+    plan.value = store.currentPlan
 
-  // Per-concept mastery: prefer diagnostic result, else heuristic from pending tasks.
-  const res = store.diagnosticResult
-  const m = {}
-  conceptMeta.value.forEach((c) => {
-    if (res?.per_concept_score?.[c.id] != null) m[c.id] = res.per_concept_score[c.id]
-    else {
-      const tasks = plan.value?.tasks.filter((t) => t.concept_id === c.id) || []
-      const done = tasks.filter((t) => t.status === 'done').length
-      m[c.id] = tasks.length ? Math.max(0.1, done / tasks.length) : 0.5
-    }
-  })
-  mastery.value = m
-  await nextTick()
-  render()
+    // Per-concept mastery: prefer diagnostic result, else heuristic from pending tasks.
+    const res = store.diagnosticResult
+    const m = {}
+    conceptMeta.value.forEach((c) => {
+      if (res?.per_concept_score?.[c.id] != null) m[c.id] = res.per_concept_score[c.id]
+      else {
+        const tasks = plan.value?.tasks.filter((t) => t.concept_id === c.id) || []
+        const done = tasks.filter((t) => t.status === 'done').length
+        m[c.id] = tasks.length ? Math.max(0.1, done / tasks.length) : 0.5
+      }
+    })
+    mastery.value = m
+    await nextTick()
+    render()
+  } catch (e) {
+    console.error('[Dashboard] load error:', e.message)
+  } finally { loading.value = false }
 }
 
 function render() {

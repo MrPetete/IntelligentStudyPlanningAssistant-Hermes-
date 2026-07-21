@@ -31,6 +31,9 @@ async function checkOff(t) {
       toast.value = 'Progress recorded.'
       setTimeout(() => (toast.value = ''), 2400)
     }
+  } catch (e) {
+    toast.value = 'Error: ' + e.message
+    setTimeout(() => (toast.value = ''), 3000)
   } finally { busy.value = false }
 }
 
@@ -44,6 +47,9 @@ async function simulate() {
       tasks.value = [...store.currentPlan.tasks]
       toast.value = 'Simulation: evidence injected → agent created a new plan version. See Version History.'
     }
+  } catch (e) {
+    toast.value = 'Simulation error: ' + e.message
+    setTimeout(() => (toast.value = ''), 3000)
   } finally { busy.value = false }
 }
 

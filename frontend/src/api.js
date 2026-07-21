@@ -12,7 +12,9 @@
 import { handleMock, resetMock } from './mock/server.js'
 
 const REAL_BASE = 'http://127.0.0.1:8000'
-const USE_REAL = false // flip to true once Member A's backend is live
+// Vite injects import.meta.env; in Node (scripts, tests) it's undefined → default to mock.
+const _env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {}
+const USE_REAL = _env.VITE_USE_REAL === 'true' // set in .env: VITE_USE_REAL=true
 
 async function request(method, path, body) {
   const url = REAL_BASE + path
