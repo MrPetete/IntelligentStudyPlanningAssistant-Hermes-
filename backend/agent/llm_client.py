@@ -333,6 +333,9 @@ def _decide_replan_user_prompt(
     ) or "(current plan has no tasks)"
 
     return (
+        f"Today's date is {date.today().isoformat()}. Any delta task's `day` must "
+        "be on or after today's date and use the correct current year — do not "
+        "date tasks in a past year.\n"
         f"Goal: {learner_state.get('goal_text')}\n"
         f"Deadline: {learner_state.get('deadline')} "
         f"({learner_state.get('days_remaining')} days remaining)\n"
@@ -642,6 +645,9 @@ def _plan_user_prompt(
         for c in ordered
     )
     return (
+        f"Today's date is {date.today().isoformat()}. Every task's `day` must be "
+        "on or after today's date and use the correct current year — do not date "
+        "tasks in a past year.\n"
         f"Deadline: {goal.get('deadline')}\n"
         f"Weekly hours available: {goal.get('weekly_hours')}\n\n"
         f"Concepts:\n{listing}\n\n"
@@ -696,7 +702,15 @@ def _real_generate_plan(goal, concepts, scores, lang):
 # shared parsing helper
 # ---------------------------------------------------------------------------
 def _loads_json_loose(raw: str) -> dict[str, Any]:
-    """Strip markdown code fences a model might add, then json.loads."""
+    """Strip markdown code fences a model might add, then json.loads.
+
+    Defensive fallback: if the strict parse fails (e.g. the model prepended a
+    sentence of prose before the JSON, or appended a trailing note), retry on
+    the outermost brace-balanced ``{...}`` substring. This only runs after the
+    strict parse has already raised, so a well-formed response is never altered
+    — it just recovers the intermittent slop that would otherwise 502 the whole
+    call after the retry budget is spent.
+    """
     import json
 
     text = raw.strip()
@@ -704,4 +718,44 @@ def _loads_json_loose(raw: str) -> dict[str, Any]:
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:]
-    return json.loads(text.strip())
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        obj = _extract_json_object(text)
+        if obj is None:
+            raise
+        return json.loads(obj)
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Return the first brace-balanced ``{...}`` object in ``text``, or None.
+
+    Brace counting is string-literal aware so a ``{`` or ``}`` inside a quoted
+    value doesn't throw off the balance.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None

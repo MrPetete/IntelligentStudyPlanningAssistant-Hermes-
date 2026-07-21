@@ -10,6 +10,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlmodel import Session, select
 
+import ingestion
 import models
 from agent import llm_client
 from agent.llm_client import LLMUnavailableError
@@ -38,8 +39,15 @@ def extract_concepts(goal_id: int, session: Session = Depends(get_session)) -> l
     if not goal:
         raise HTTPException(404, "goal not found")
 
+    # No document text here: route through the goal-topic fallback (D4) so this
+    # endpoint returns a usable map from the goal alone (source='goal_topic')
+    # instead of sending the live model an empty "Course material:" prompt (which
+    # yields non-JSON -> 502). This mirrors the no-file /document pipeline and is
+    # what the frontend's no-file onboarding relies on.
     try:
-        raw = llm_client.extract_concepts(material_text="", explanation_language=goal.explanation_language)
+        raw = ingestion.build_concept_map(
+            "", goal.explanation_language, goal_text=goal.goal_text
+        )
     except LLMUnavailableError as exc:
         # A3: live model unavailable -> clean, retryable error (never a 500).
         raise HTTPException(502, {"error": "concept extraction unavailable, please retry",

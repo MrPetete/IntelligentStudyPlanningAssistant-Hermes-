@@ -47,6 +47,27 @@ def test_loads_json_loose_plain_json():
     assert lc._loads_json_loose('{"a": 1}') == {"a": 1}
 
 
+def test_loads_json_loose_recovers_prose_before_object():
+    # A real model sometimes prepends a sentence before the JSON. The strict
+    # parse fails; the brace-balanced fallback recovers the object rather than
+    # 502-ing the whole call after the retry budget is spent.
+    raw = 'Sure! Here is the concept map:\n{"concepts": [{"canonical_term": "X"}]}'
+    assert lc._loads_json_loose(raw) == {"concepts": [{"canonical_term": "X"}]}
+
+
+def test_loads_json_loose_recovers_trailing_note():
+    raw = '{"decision": "no_change", "plan": null}\n\nLet me know if you need more.'
+    assert lc._loads_json_loose(raw) == {"decision": "no_change", "plan": None}
+
+
+def test_loads_json_loose_brace_inside_string_value_not_miscounted():
+    # A '}' inside a quoted value must not prematurely close the object.
+    raw = 'noise {"reasoning_text": "use a set like {a, b}", "decision": "no_change"} tail'
+    out = lc._loads_json_loose(raw)
+    assert out["reasoning_text"] == "use a set like {a, b}"
+    assert out["decision"] == "no_change"
+
+
 # ---------------------------------------------------------------------------
 # concept extraction parser
 # ---------------------------------------------------------------------------
@@ -234,6 +255,9 @@ ALL_TESTS = [
     test_parse_concepts_response_rejects_empty_list,
     test_parse_concepts_response_rejects_missing_key,
     test_parse_concepts_response_no_parent_concept_id_fabricated,
+    test_loads_json_loose_recovers_prose_before_object,
+    test_loads_json_loose_recovers_trailing_note,
+    test_loads_json_loose_brace_inside_string_value_not_miscounted,
     test_split_into_sections_handles_short_and_long_text,
     test_parse_diagnostic_response_happy_path,
     test_parse_diagnostic_response_drops_invalid_concept_id,

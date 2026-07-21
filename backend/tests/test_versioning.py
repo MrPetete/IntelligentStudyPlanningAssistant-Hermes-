@@ -312,6 +312,59 @@ def test_db_repeated_trigger_records_no_change_not_duplicate():
         assert max(v.version_no for v in versions) == 2, "no V3 should be created on a duplicate delta"
 
 
+def test_db_replan_weak_concept_covered_by_parent_not_falsely_rejected():
+    """
+    Audit finding: full-merge validation must judge the MERGED plan for weak-
+    concept coverage, not the delta alone. A weak concept covered by a carried-
+    forward parent task is NOT dropped just because the remediation delta only
+    touches a different concept. Before the fix, the orchestrator validated the
+    delta in isolation and Rule 5b falsely rejected it ("drops all coverage of
+    still-weak concepts"), forcing a no_change on every live replan.
+    """
+    from sqlmodel import Session, select
+    import models
+    from agent import orchestrator, tools
+    from agent import llm_client
+
+    _db = _fresh_db("weakcover")
+    with Session(_db.engine) as s:
+        s.add(models.User(id=1, name="t")); s.commit()
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-09-30", weekly_hours=8.0)
+        s.add(g); s.commit(); s.refresh(g)
+        # Two confirmed concepts; make BOTH weak via low quiz scores.
+        ca = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
+        cb = models.Concept(goal_id=g.id, canonical_term="ACID", name="A", confirmed=True)
+        s.add(ca); s.add(cb); s.commit(); s.refresh(ca); s.refresh(cb)
+        for cid in (ca.id, cb.id):
+            s.add(models.Evidence(goal_id=g.id, concept_id=cid, type="quiz_result",
+                                  payload_json='{"score": 0.2}'))
+        s.commit()
+        # Parent plan v1 covers BOTH weak concepts.
+        tools.create_plan_version(s, g.id, {"tasks": [
+            {"concept_id": ca.id, "day": "2026-07-25", "description": "norm base", "est_minutes": 40},
+            {"concept_id": cb.id, "day": "2026-07-26", "description": "acid base", "est_minutes": 40},
+        ]}, created_by="user")
+
+        # Delta touches ONLY Normalization (ca). ACID (cb) is weak but covered by
+        # the carried-forward parent task, so the merged plan still covers it.
+        orig = llm_client.decide_replan
+        llm_client.decide_replan = lambda **kw: {
+            "decision": "new_version", "reasoning_text": "focus normalization",
+            "plan": {"tasks": [{"concept_id": ca.id, "canonical_term": "Normalization",
+                                "day": "2026-07-28", "description": "norm remediation",
+                                "est_minutes": 40}]},
+        }
+        try:
+            res = orchestrator.run_agent(s, g.id, "low_mastery")
+        finally:
+            llm_client.decide_replan = orig
+
+        assert res["decision"] == "new_version", res
+        versions = s.exec(select(models.PlanVersion).where(
+            models.PlanVersion.goal_id == g.id)).all()
+        assert max(v.version_no for v in versions) == 2, "a valid remediation delta must create V2"
+
+
 def test_db_complete_task_on_superseded_version_rejected():
     """A-FIX-2: completing a task on an old version returns 409 and mutates nothing."""
     from fastapi import HTTPException
@@ -379,6 +432,7 @@ DB_TESTS = [
     test_db_full_merge_carries_completion_state,
     test_db_validation_failure_records_no_change,
     test_db_repeated_trigger_records_no_change_not_duplicate,
+    test_db_replan_weak_concept_covered_by_parent_not_falsely_rejected,
     test_db_complete_task_on_superseded_version_rejected,
     test_db_complete_task_sets_completed_at,
 ]
