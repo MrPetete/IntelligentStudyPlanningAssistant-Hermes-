@@ -25,6 +25,7 @@ from sqlmodel import Session, select
 
 import models
 from agent import llm_client, planmerge, tools
+from agent.llm_client import LLMUnavailableError
 from agent.validator import validate_plan
 from config import LLM_MAX_RETRIES, TRIGGERS
 
@@ -54,13 +55,31 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
     evidence_snapshot = {"progress": progress, "evidence_count": len(evidence)}
 
     # --- LLM decision point -------------------------------------------------
-    decision = llm_client.decide_replan(
-        learner_state=learner_state,
-        progress=progress,
-        evidence=evidence,
-        current_plan=current_plan,
-        explanation_language=lang,
-    )
+    # A3: if the live model is unavailable (transport failure or unparseable
+    # after bounded retries), we must NEVER crash a replan. Fall back to a
+    # recorded no_change so the plan is never corrupted by a bad/absent
+    # response, and the decision row still documents that we considered it.
+    try:
+        decision = llm_client.decide_replan(
+            learner_state=learner_state,
+            progress=progress,
+            evidence=evidence,
+            current_plan=current_plan,
+            explanation_language=lang,
+        )
+    except LLMUnavailableError as exc:
+        trace.append({
+            "tool": "llm.decide_replan",
+            "args": {"explanation_language": lang, "evidence_count": len(evidence)},
+            "result_summary": f"unavailable: {exc}",
+        })
+        rec = tools.record_agent_decision(
+            session, goal_id, trigger_reason, evidence_snapshot,
+            _model_unavailable_reasoning(lang),
+            trace, "no_change", None,
+        )
+        return {"decision": "no_change", "decision_id": rec["decision_id"],
+                "note": "llm_unavailable"}
     trace.append({
         "tool": "llm.decide_replan",
         "args": {"explanation_language": lang, "evidence_count": len(evidence)},
@@ -160,6 +179,21 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def _model_unavailable_reasoning(lang: str) -> str:
+    """Localized reasoning_text for a no_change forced by an unavailable model
+    (A3). Honest about why nothing changed, so the decision row still reads well."""
+    if lang == "zh":
+        return (
+            "规划助手暂时不可用，本次未能生成新的计划建议。"
+            "为避免损坏当前计划，本次保持不变；稍后可再次尝试重新规划。"
+        )
+    return (
+        "The planning assistant was temporarily unavailable, so no new plan was "
+        "generated this time. To avoid corrupting the current plan it was left "
+        "unchanged; you can trigger a replan again later."
+    )
+
+
 def _traced(trace: list[dict[str, Any]], name: str, args: dict, result: Any) -> Any:
     """Append a read-tool call to the trace and return its result unchanged."""
     if isinstance(result, list):
