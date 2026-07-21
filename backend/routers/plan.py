@@ -139,11 +139,23 @@ def plan_diff(goal_id: int, from_: int = Query(..., alias="from"), to: int = Que
     removed = [t for t in a if (t.description, t.day) not in b_keys]
     unchanged = len(b) - len(added)
 
-    concept_summary: dict[str, str] = {}
+    added_counts: dict[str, int] = {}
     for t in added:
         term = terms.get(t.concept_id, "general") if t.concept_id else "general"
-        concept_summary[term] = concept_summary.get(term, "") + "+1 "
-    concept_summary = {k: f"added {v.strip()}" for k, v in concept_summary.items()}
+        added_counts[term] = added_counts.get(term, 0) + 1
+    removed_counts: dict[str, int] = {}
+    for t in removed:
+        term = terms.get(t.concept_id, "general") if t.concept_id else "general"
+        removed_counts[term] = removed_counts.get(term, 0) + 1
+
+    concept_summary: dict[str, str] = {}
+    for term in set(added_counts) | set(removed_counts):
+        parts = []
+        if added_counts.get(term):
+            parts.append(f"{added_counts[term]} added")
+        if removed_counts.get(term):
+            parts.append(f"{removed_counts[term]} removed")
+        concept_summary[term] = "; ".join(parts)
 
     return PlanDiff(
         from_version=from_, to_version=to,

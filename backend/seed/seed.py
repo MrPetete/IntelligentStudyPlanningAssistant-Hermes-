@@ -85,7 +85,29 @@ def seed(language: str = "en") -> int:
         by_term = {c.canonical_term: c.id for c in concepts}
         for i, t in enumerate(plan["tasks"]):
             t["concept_id"] = concepts[i].id if i < len(concepts) else None
-        tools.create_plan_version(session, goal.id, plan, created_by="user")
+        created = tools.create_plan_version(session, goal.id, plan, created_by="user")
+
+        # Mark every task EXCEPT Normalization as already done. Without this,
+        # get_progress_summary() reads 100% of tasks as "due and incomplete" on
+        # a freshly seeded goal (Phase 0's due==total simplification), which
+        # makes the `behind_schedule` trigger fire before the Normalization
+        # quiz/mastery signal is ever evaluated. The intended demo story is a
+        # student who is otherwise on track and struggling specifically with
+        # Normalization — this seeds that state honestly instead of a
+        # coincidentally-behind-on-everything student.
+        norm_id = by_term.get("Normalization")
+        tasks = session.exec(
+            select(models.Task).where(models.Task.plan_version_id == created["plan_version_id"])
+        ).all()
+        for t in tasks:
+            if t.concept_id != norm_id:
+                t.status = "done"
+                session.add(t)
+                session.add(models.Evidence(
+                    goal_id=goal.id, concept_id=t.concept_id, type="task_done",
+                    payload_json=f'{{"task_id": {t.id}, "minutes": {t.est_minutes}, "source": "seed"}}',
+                ))
+        session.commit()
 
         print(f"Seeded goal_id={goal.id} (language={language}), "
               f"{len(concepts)} concepts, Roadmap V1 created.")
