@@ -266,7 +266,17 @@ function route(method, path, body) {
     const res = state.diagnosticResults.get(goalId)
     const scores = res?.per_concept_score || {}
     const triggerFired = Object.values(scores).some((s) => s < 0.5)
-    return { task_id: taskId, status: found ? 'done' : 'pending', trigger_fired: triggerFired }
+    // Option A: when the trigger fires, actually run a replan (like the real backend)
+    // so the toast is truthful and Version History shows a new version.
+    const result = { task_id: taskId, status: found ? 'done' : 'pending', trigger_fired: triggerFired }
+    if (triggerFired) {
+      // doReplan returns { scenario, evidence_created, trigger_fired, decision_id } directly
+      // (not wrapped in .data like handleMock responses).
+      const g = state.goals.get(goalId)
+      const simDec = doReplan(goalId, 'low_mastery', g?.explanation_language || 'en')
+      result.decision_id = simDec.decision_id
+    }
+    return result
   }
 
   if (!goalMatch) return httpError(404, 'unknown endpoint ' + m + ' ' + p)

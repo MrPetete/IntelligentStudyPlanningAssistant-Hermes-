@@ -21,10 +21,11 @@ async function request(method, path, body) {
     await new Promise((r) => setTimeout(r, 120 + Math.random() * 220))
     return handleMock(method, path, body)
   }
+  const isForm = body instanceof FormData
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined
+    headers: isForm ? undefined : { 'Content-Type': 'application/json' },
+    body: isForm ? body : (body ? JSON.stringify(body) : undefined)
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.detail || `${res.status} ${method} ${path}`)
@@ -40,7 +41,11 @@ const api = {
   setLanguage(id, lang) { return request('PATCH', `/goals/${id}/language`, { explanation_language: lang }).then((r) => r.data) },
 
   // ---- Documents ----
-  uploadDocument(id, filename) { return request('POST', `/goals/${id}/document`, { filename }).then((r) => r.data) },
+  uploadDocument(id, file) {
+    const fd = new FormData()
+    if (file) fd.append('file', file)
+    return request('POST', `/goals/${id}/document`, fd).then((r) => r.data)
+  },
   getDocument(id) { return request('GET', `/goals/${id}/document`).then((r) => r.data) },
 
   // ---- Concepts ----
