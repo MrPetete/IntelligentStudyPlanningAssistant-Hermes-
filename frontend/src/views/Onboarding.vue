@@ -48,9 +48,15 @@ async function submitGoal() {
     // Material: begin async processing; no-material -> nothing to process.
     if (goalForm.filename) {
       docStatus.value = 'uploaded'
-      await api.uploadDocument(goal.id, fileInput.value?.files?.[0])
-      docStatus.value = 'processing'
-      startDocPoll(goal.id)
+      try {
+        await api.uploadDocument(goal.id, fileInput.value?.files?.[0])
+        docStatus.value = 'processing'
+        startDocPoll(goal.id)
+      } catch (e) {
+        // Upload failed — still allow the user to continue with goal-topic concepts
+        error.value = 'Upload failed: ' + e.message + '. Continuing with goal-topic concepts.'
+        docStatus.value = 'failed'
+      }
     } else {
       docStatus.value = 'none'
     }
@@ -64,16 +70,21 @@ async function submitGoal() {
 function startDocPoll(id) {
   clearInterval(pollTimer)
   let attempts = 0
+  const maxAttempts = 40 // ~60s with 1.5s interval (real backend can take 5–20s for extraction)
   pollTimer = setInterval(async () => {
     attempts++
-    // Graceful timeout: stop after ~15 tries (9s) to avoid spinning forever on a stuck real backend
-    if (attempts > 15) { clearInterval(pollTimer); docStatus.value = 'uploaded'; return }
+    if (attempts > maxAttempts) {
+      clearInterval(pollTimer)
+      docStatus.value = 'failed'
+      error.value = 'Document analysis timed out. You can continue with goal-topic concepts.'
+      return
+    }
     try {
       const d = await api.getDocument(id)
       docStatus.value = d.status
       if (d.status === 'ready' || d.status === 'failed') clearInterval(pollTimer)
-    } catch { /* ignore */ }
-  }, 600)
+    } catch { /* ignore transient errors during poll */ }
+  }, 1500)
 }
 
 // ---- Screen 2: warm-up (context only, NOT the diagnostic) ----
