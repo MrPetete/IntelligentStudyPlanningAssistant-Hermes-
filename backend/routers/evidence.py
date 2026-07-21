@@ -49,11 +49,26 @@ def complete_task(task_id: int, session: Session = Depends(get_session)) -> Task
     task = session.get(models.Task, task_id)
     if not task:
         raise HTTPException(404, "task not found")
-    task.status = "done"
-    session.add(task)
 
     pv = session.get(models.PlanVersion, task.plan_version_id)
     goal_id = pv.goal_id
+
+    # Append-only guard (D11): only the CURRENT plan version's tasks may be
+    # completed. Completing a task on a superseded version would both mutate
+    # immutable history and never reach the current version's carried copy,
+    # leaving the two versions divergent. Reject as a conflict instead.
+    latest = tools._latest_plan_version(session, goal_id)
+    if latest and task.plan_version_id != latest.id:
+        raise HTTPException(
+            409,
+            "cannot complete a task on a superseded plan version; "
+            "complete the matching task on the current version",
+        )
+
+    task.status = "done"
+    task.completed_at = models._utcnow()
+    session.add(task)
+
     session.add(models.Evidence(
         goal_id=goal_id, concept_id=task.concept_id, type="task_done",
         payload_json=json.dumps({"task_id": task_id, "minutes": task.est_minutes}, ensure_ascii=False),

@@ -57,3 +57,28 @@ def merge_tasks(
             "completed_at": None,
         })
     return merged
+
+
+def dedupe_delta(
+    delta_tasks: list[dict[str, Any]],
+    current_tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Return the delta tasks that are NOT already present in the current plan,
+    keyed on (concept_id, description). Pure; never mutates inputs.
+
+    The orchestrator calls this before persisting a replan so that a repeated
+    trigger (e.g. low_mastery keeps firing while a concept stays weak) does not
+    re-append identical remediation tasks into V3, V4, ... If this returns an
+    empty list, the orchestrator records a no_change decision instead of
+    creating an empty new version (D12: "considered, current plan already
+    covers it"). merge_tasks itself stays a pure appender and does not dedupe.
+    """
+    existing = {
+        (t.get("concept_id"), t.get("description"))
+        for t in current_tasks
+    }
+    return [
+        t for t in delta_tasks
+        if (t.get("concept_id"), t.get("description")) not in existing
+    ]

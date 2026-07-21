@@ -109,12 +109,32 @@ def test_merge_diff_shows_added_only_nothing_removed():
     assert len(removed) == 0, f"expected nothing removed, got {len(removed)}"
 
 
+def test_dedupe_delta_drops_present_keeps_new():
+    """A-FIX-1: dedupe_delta removes delta tasks already in the current plan."""
+    from agent.planmerge import dedupe_delta
+    current = [
+        {"concept_id": 1, "description": "Remediation: review 1NF-3NF with worked examples."},
+        {"concept_id": 1, "description": "Remediation: decompose 5 relations to 3NF."},
+    ]
+    # identical delta -> everything dropped (the runaway-replan case)
+    assert dedupe_delta([dict(t) for t in current], current) == []
+    # a genuinely new task survives
+    new = [{"concept_id": 1, "description": "Remediation: brand new task."}]
+    assert len(dedupe_delta(new, current)) == 1
+    # same description but different concept is NOT a dupe (keyed on both)
+    other = [{"concept_id": 2, "description": "Remediation: decompose 5 relations to 3NF."}]
+    assert len(dedupe_delta(other, current)) == 1
+    # empty current -> nothing dropped
+    assert len(dedupe_delta(new, [])) == 1
+
+
 PURE_TESTS = [
     test_merge_appends_delta_after_parent,
     test_merge_carries_completion_state_forward,
     test_merge_delta_tasks_are_fresh_pending,
     test_merge_no_parent_is_delta_only,
     test_merge_diff_shows_added_only_nothing_removed,
+    test_dedupe_delta_drops_present_keeps_new,
 ]
 
 
@@ -260,10 +280,107 @@ def test_db_validation_failure_records_no_change():
         assert "reject" in dec.reasoning_text.lower() or "valid" in dec.reasoning_text.lower()
 
 
+def test_db_repeated_trigger_records_no_change_not_duplicate():
+    """
+    A-FIX-1: with the mock returning the same delta every time, a SECOND agent
+    run must dedupe to nothing and record no_change — NOT create a V3 with
+    duplicate remediation tasks.
+    """
+    from sqlmodel import Session, select
+    import models
+    from agent import orchestrator, tools
+
+    _db = _fresh_db("dedup")
+    with Session(_db.engine) as s:
+        s.add(models.User(id=1, name="t")); s.commit()
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        s.add(g); s.commit(); s.refresh(g)
+        c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
+        s.add(c); s.commit(); s.refresh(c)
+        tools.create_plan_version(s, g.id, {"tasks": [
+            {"concept_id": c.id, "day": "2026-07-21", "description": "base", "est_minutes": 40},
+        ]}, created_by="user")
+
+        # First run: mock proposes 2 remediation tasks -> new_version (V2).
+        r1 = orchestrator.run_agent(s, g.id, "low_mastery")
+        assert r1["decision"] == "new_version", r1
+        # Second run with the identical mock delta: must dedupe -> no_change, no V3.
+        r2 = orchestrator.run_agent(s, g.id, "low_mastery")
+        assert r2["decision"] == "no_change", r2
+        versions = s.exec(select(models.PlanVersion).where(
+            models.PlanVersion.goal_id == g.id)).all()
+        assert max(v.version_no for v in versions) == 2, "no V3 should be created on a duplicate delta"
+
+
+def test_db_complete_task_on_superseded_version_rejected():
+    """A-FIX-2: completing a task on an old version returns 409 and mutates nothing."""
+    from fastapi import HTTPException
+    from sqlmodel import Session, select
+    import models
+    from agent import tools
+    from routers.evidence import complete_task
+
+    _db = _fresh_db("stale")
+    with Session(_db.engine) as s:
+        s.add(models.User(id=1, name="t")); s.commit()
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        s.add(g); s.commit(); s.refresh(g)
+        c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
+        s.add(c); s.commit(); s.refresh(c)
+        v1 = tools.create_plan_version(s, g.id, {"tasks": [
+            {"concept_id": c.id, "day": "2026-07-21", "description": "old task", "est_minutes": 40},
+        ]}, created_by="user")
+        v1_task = s.exec(select(models.Task).where(
+            models.Task.plan_version_id == v1["plan_version_id"])).first()
+        # replan to V2 so V1 is now superseded
+        tools.create_plan_version(s, g.id, {"tasks": [
+            {"concept_id": c.id, "day": "2026-07-23", "description": "new", "est_minutes": 40},
+        ]}, created_by="agent")
+
+        raised = False
+        try:
+            complete_task(v1_task.id, session=s)
+        except HTTPException as e:
+            raised = True
+            assert e.status_code == 409
+        assert raised, "completing a superseded-version task must raise 409"
+        # V1 row untouched
+        s.refresh(v1_task)
+        assert v1_task.status != "done", "superseded task must not be mutated"
+
+
+def test_db_complete_task_sets_completed_at():
+    """A-FIX-4: completing a current-version task stamps completed_at."""
+    from sqlmodel import Session, select
+    import models
+    from agent import tools
+    from routers.evidence import complete_task
+
+    _db = _fresh_db("compat")
+    with Session(_db.engine) as s:
+        s.add(models.User(id=1, name="t")); s.commit()
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        s.add(g); s.commit(); s.refresh(g)
+        c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
+        s.add(c); s.commit(); s.refresh(c)
+        v1 = tools.create_plan_version(s, g.id, {"tasks": [
+            {"concept_id": c.id, "day": "2026-07-21", "description": "t", "est_minutes": 40},
+        ]}, created_by="user")
+        task = s.exec(select(models.Task).where(
+            models.Task.plan_version_id == v1["plan_version_id"])).first()
+        complete_task(task.id, session=s)
+        s.refresh(task)
+        assert task.status == "done"
+        assert task.completed_at, "completed_at must be stamped on completion"
+
+
 DB_TESTS = [
     test_db_replan_appends_new_version_and_preserves_parent,
     test_db_full_merge_carries_completion_state,
     test_db_validation_failure_records_no_change,
+    test_db_repeated_trigger_records_no_change_not_duplicate,
+    test_db_complete_task_on_superseded_version_rejected,
+    test_db_complete_task_sets_completed_at,
 ]
 
 

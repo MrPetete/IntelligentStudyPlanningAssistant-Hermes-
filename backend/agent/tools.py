@@ -263,8 +263,14 @@ def _mastery_by_concept(session: Session, goal_id: int) -> dict[int, float]:
     weighted update is a later refinement.
     """
     mastery: dict[int, float] = {}
+    # Explicit ordering: the update is order-sensitive (quiz_result sets an
+    # absolute value; task_done/task_skipped are relative deltas), so evidence
+    # must be processed in creation order. Order by id (monotonic with insert)
+    # rather than relying on the engine's default row order.
     rows = session.exec(
-        select(models.Evidence).where(models.Evidence.goal_id == goal_id)
+        select(models.Evidence)
+        .where(models.Evidence.goal_id == goal_id)
+        .order_by(models.Evidence.id)
     ).all()
     for e in rows:
         if e.concept_id is None:
