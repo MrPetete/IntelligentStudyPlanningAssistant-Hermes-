@@ -11,6 +11,7 @@ even while the model is fake.
 """
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 from config import MOCK_LLM
@@ -138,7 +139,7 @@ def _mock_plan(concepts: list[dict[str, Any]], lang: str) -> dict[str, Any]:
         tasks.append(
             {
                 "concept_id": c.get("id", i),
-                "day": f"2026-07-2{i}",
+                "day": (date.today() + timedelta(days=i - 1)).isoformat(),
                 "description": _t(
                     lang,
                     f"Study {c['canonical_term']} and do 3 practice questions.",
@@ -160,12 +161,14 @@ def _mock_decide_replan(evidence: list[dict[str, Any]], lang: str) -> dict[str, 
         "你最近关于 Normalization 的测验得分较低，且多个 Normalization 任务未完成。"
         "由于该概念是后续主题的基础，我在继续之前新增了两个 Normalization 巩固任务。",
     )
+    today = date.today().isoformat()
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
     plan = {
         "tasks": [
             {
                 "concept_id": None,  # orchestrator resolves canonical_term -> concept_id
                 "canonical_term": "Normalization",
-                "day": "2026-07-21",
+                "day": today,
                 "description": _t(
                     lang,
                     "Remediation: review 1NF-3NF with worked examples.",
@@ -176,7 +179,7 @@ def _mock_decide_replan(evidence: list[dict[str, Any]], lang: str) -> dict[str, 
             {
                 "concept_id": None,
                 "canonical_term": "Normalization",
-                "day": "2026-07-22",
+                "day": tomorrow,
                 "description": _t(
                     lang,
                     "Remediation: decompose 5 relations to 3NF.",
@@ -300,7 +303,10 @@ def _parse_concepts_response(raw: str) -> list[dict[str, Any]]:
             "name": (item.get("name") or term).strip(),
             "explanation": (item.get("explanation") or "").strip(),
             "order_index": int(item.get("order_index") or i),
-            "parent_concept": item.get("parent_concept") or None,
+            # parent linking deferred — see V1_AUDIT_FIXES_MEMBER_C.md C-FIX-3
+            # (models.Concept.parent_concept_id is an int FK; the model only
+            # gives us a name string here, so we don't fabricate a mismatched
+            # field until the real path resolves name -> parent_concept_id).
             "source": "material",
         })
     if not out:

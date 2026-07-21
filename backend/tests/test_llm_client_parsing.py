@@ -2,6 +2,9 @@
 Tests for the response parsers backing the three real-generation prompts
 (_real_extract_concepts, _real_generate_diagnostic, _real_generate_plan).
 
+Plain-script style (no pytest) to match test_triggers_validator.py and
+test_versioning.py — run with `python tests/test_llm_client_parsing.py`.
+
 These parsers are the actual (non-mock) logic Member C owns; the network
 call itself is intentionally not wired (MOCK_LLM stays True — see
 llm_client.py). Each test feeds a hand-written string standing in for a raw
@@ -12,10 +15,24 @@ parser either normalizes it into the exact `_mock_*` shape or rejects it.
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
-import pytest
+# Run as a plain script (not `python -m`): put backend/ on sys.path so
+# `agent.llm_client` resolves the same way the app does.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from agent import llm_client as lc
+
+
+def _assert_raises(exc_type, fn, *args, **kwargs):
+    try:
+        fn(*args, **kwargs)
+    except exc_type:
+        return
+    except Exception as e:  # noqa: BLE001
+        raise AssertionError(f"expected {exc_type.__name__}, got {type(e).__name__}: {e}")
+    raise AssertionError(f"expected {exc_type.__name__}, but no exception was raised")
 
 
 # ---------------------------------------------------------------------------
@@ -67,13 +84,21 @@ def test_parse_concepts_response_caps_at_max():
 
 
 def test_parse_concepts_response_rejects_empty_list():
-    with pytest.raises(ValueError):
-        lc._parse_concepts_response(json.dumps({"concepts": []}))
+    _assert_raises(ValueError, lc._parse_concepts_response, json.dumps({"concepts": []}))
 
 
 def test_parse_concepts_response_rejects_missing_key():
-    with pytest.raises(ValueError):
-        lc._parse_concepts_response(json.dumps({"oops": []}))
+    _assert_raises(ValueError, lc._parse_concepts_response, json.dumps({"oops": []}))
+
+
+def test_parse_concepts_response_no_parent_concept_id_fabricated():
+    """C-FIX-3: parser must not invent a parent_concept(_id) field it can't resolve."""
+    raw = json.dumps({"concepts": [
+        {"canonical_term": "Normalization", "explanation": "...", "parent_concept": "Relational design"},
+    ]})
+    out = lc._parse_concepts_response(raw)
+    assert "parent_concept" not in out[0]
+    assert "parent_concept_id" not in out[0]
 
 
 def test_split_into_sections_handles_short_and_long_text():
@@ -134,8 +159,7 @@ def test_parse_diagnostic_response_rejects_all_invalid():
     raw = json.dumps({"questions": [
         {"concept_id": 999, "prompt": "q", "options": ["a", "b"], "answer": "A"},
     ]})
-    with pytest.raises(ValueError):
-        lc._parse_diagnostic_response(raw, valid_concept_ids={1}, n=6)
+    _assert_raises(ValueError, lc._parse_diagnostic_response, raw, valid_concept_ids={1}, n=6)
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +194,72 @@ def test_parse_plan_response_coerces_bad_minutes_to_zero():
 
 
 def test_parse_plan_response_rejects_all_invalid():
-    with pytest.raises(ValueError):
-        lc._parse_plan_response(
-            json.dumps({"tasks": [{"concept_id": 999, "day": "2026-08-01", "description": "x"}]}),
-            valid_concept_ids={1},
-        )
+    raw = json.dumps({"tasks": [{"concept_id": 999, "day": "2026-08-01", "description": "x"}]})
+    _assert_raises(ValueError, lc._parse_plan_response, raw, valid_concept_ids={1})
+
+
+# ---------------------------------------------------------------------------
+# C-FIX-1 / C-FIX-2 regression: mock dates must never be hardcoded/broken
+# ---------------------------------------------------------------------------
+def test_mock_decide_replan_dates_are_relative_and_valid_today():
+    from agent.validator import validate_plan
+    from datetime import date
+
+    plan = lc._mock_decide_replan([], "en")["plan"]
+    for t in plan["tasks"]:
+        t["concept_id"] = 1  # normally resolved by the orchestrator
+    result = validate_plan(
+        plan=plan, weekly_hours=6.0, deadline="2026-08-10",
+        today=date.today().isoformat(), valid_concept_ids={1}, weak_concept_ids={1},
+    )
+    assert result.ok, f"mock replan dates rejected by validator: {result.errors}"
+
+
+def test_mock_plan_dates_valid_for_more_than_nine_concepts():
+    """C-FIX-2 regression: string-template dates broke past concept #9."""
+    concepts = [{"id": i, "canonical_term": f"Concept{i}"} for i in range(1, 12)]
+    plan = lc._mock_plan(concepts, "en")
+    days = [t["day"] for t in plan["tasks"]]
+    assert len(days) == 11
+    for d in days:
+        assert len(d) == 10 and d[4] == "-" and d[7] == "-", f"malformed date: {d}"
+
+
+ALL_TESTS = [
+    test_loads_json_loose_strips_markdown_fence,
+    test_loads_json_loose_plain_json,
+    test_parse_concepts_response_happy_path,
+    test_parse_concepts_response_drops_items_missing_canonical_term,
+    test_parse_concepts_response_caps_at_max,
+    test_parse_concepts_response_rejects_empty_list,
+    test_parse_concepts_response_rejects_missing_key,
+    test_parse_concepts_response_no_parent_concept_id_fabricated,
+    test_split_into_sections_handles_short_and_long_text,
+    test_parse_diagnostic_response_happy_path,
+    test_parse_diagnostic_response_drops_invalid_concept_id,
+    test_parse_diagnostic_response_truncates_to_n,
+    test_parse_diagnostic_response_defaults_bad_answer_letter,
+    test_parse_diagnostic_response_rejects_all_invalid,
+    test_parse_plan_response_happy_path,
+    test_parse_plan_response_drops_invalid_concept_and_empty_description,
+    test_parse_plan_response_coerces_bad_minutes_to_zero,
+    test_parse_plan_response_rejects_all_invalid,
+    test_mock_decide_replan_dates_are_relative_and_valid_today,
+    test_mock_plan_dates_valid_for_more_than_nine_concepts,
+]
+
+
+if __name__ == "__main__":
+    passed = 0
+    failed = 0
+    for test in ALL_TESTS:
+        try:
+            test()
+            print(f"PASS  {test.__name__}")
+            passed += 1
+        except AssertionError as e:
+            print(f"FAIL  {test.__name__}: {e}")
+            failed += 1
+    print(f"\n{passed} passed, {failed} failed")
+    if failed:
+        raise SystemExit(1)
