@@ -24,7 +24,7 @@ from typing import Any
 from sqlmodel import Session, select
 
 import models
-from agent import llm_client, tools
+from agent import llm_client, planmerge, tools
 from agent.validator import validate_plan
 from config import LLM_MAX_RETRIES, TRIGGERS
 
@@ -78,8 +78,32 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
         )
         return {"decision": "no_change", "decision_id": rec["decision_id"]}
 
-    # --- resolve canonical_term -> concept_id, then validate (bounded) ------
+    # --- resolve canonical_term -> concept_id ------------------------------
     plan = _resolve_concepts(session, goal_id, decision["plan"])
+
+    # Dedup the delta against the CURRENT plan (planmerge is a pure appender and
+    # deliberately does not dedupe — the orchestrator owns that policy). Without
+    # this, a repeated low_mastery trigger re-proposes the identical remediation
+    # every event, stacking duplicate tasks across V3, V4, ... Here we drop delta
+    # tasks that already exist, and if nothing new remains we honestly record a
+    # no_change decision ("considered, current plan already covers it" — D12).
+    plan = {**plan, "tasks": planmerge.dedupe_delta(
+        plan.get("tasks", []), current_plan.get("tasks", []))}
+    if not plan.get("tasks"):
+        trace.append({
+            "tool": "orchestrator.dedup_delta",
+            "args": {"proposed": len(decision["plan"].get("tasks", []))},
+            "result_summary": "0 new tasks after dedup; current plan already covers this",
+        })
+        rec = tools.record_agent_decision(
+            session, goal_id, trigger_reason, evidence_snapshot,
+            reasoning or "No change: the current plan already covers this remediation.",
+            trace, "no_change", None,
+        )
+        return {"decision": "no_change", "decision_id": rec["decision_id"],
+                "note": "delta_already_present"}
+
+    # --- validate (bounded) ------------------------------------------------
     valid_ids = _confirmed_concept_ids(session, goal_id)
     weak_ids = _weak_concept_ids(learner_state)
     today = date.today().isoformat()

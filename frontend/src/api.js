@@ -1,10 +1,13 @@
 /**
  * API client — mapped 1:1 to the endpoints in app/frontend/README_FRONTEND.md.
  *
- * MOCK-FIRST: every call is attempted against the real backend
- * (http://127.0.0.1:8000) and, if it is unreachable, served by the in-browser
- * mock server in src/mock/server.js so the UI is never blocked by backend
- * readiness. No contract field is invented; the mock mirrors schemas.py.
+ * MOCK-FIRST: USE_REAL is a hard switch.
+ *   - When USE_REAL = false: every call is served by the in-browser mock server
+ *     in src/mock/server.js (no network, no backend dependency).
+ *   - When USE_REAL = true: every call goes to the real backend at
+ *     http://127.0.0.1:8000. There is NO automatic fallback to the mock.
+ *
+ * No contract field is invented; the mock mirrors schemas.py.
  */
 import { handleMock, resetMock } from './mock/server.js'
 
@@ -18,10 +21,11 @@ async function request(method, path, body) {
     await new Promise((r) => setTimeout(r, 120 + Math.random() * 220))
     return handleMock(method, path, body)
   }
+  const isForm = body instanceof FormData
   const res = await fetch(url, {
     method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined
+    headers: isForm ? undefined : { 'Content-Type': 'application/json' },
+    body: isForm ? body : (body ? JSON.stringify(body) : undefined)
   })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.detail || `${res.status} ${method} ${path}`)
@@ -37,7 +41,11 @@ const api = {
   setLanguage(id, lang) { return request('PATCH', `/goals/${id}/language`, { explanation_language: lang }).then((r) => r.data) },
 
   // ---- Documents ----
-  uploadDocument(id, filename) { return request('POST', `/goals/${id}/document`, { filename }).then((r) => r.data) },
+  uploadDocument(id, file) {
+    const fd = new FormData()
+    if (file) fd.append('file', file)
+    return request('POST', `/goals/${id}/document`, fd).then((r) => r.data)
+  },
   getDocument(id) { return request('GET', `/goals/${id}/document`).then((r) => r.data) },
 
   // ---- Concepts ----

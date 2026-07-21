@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import store, { api, initGoal } from '../store.js'
+import ConceptTag from '../components/ConceptTag.vue'
 
 const router = useRouter()
 
@@ -47,7 +48,7 @@ async function submitGoal() {
     // Material: begin async processing; no-material -> nothing to process.
     if (goalForm.filename) {
       docStatus.value = 'uploaded'
-      await api.uploadDocument(goal.id, goalForm.filename)
+      await api.uploadDocument(goal.id, fileInput.value?.files?.[0])
       docStatus.value = 'processing'
       startDocPoll(goal.id)
     } else {
@@ -62,7 +63,11 @@ async function submitGoal() {
 }
 function startDocPoll(id) {
   clearInterval(pollTimer)
+  let attempts = 0
   pollTimer = setInterval(async () => {
+    attempts++
+    // Graceful timeout: stop after ~15 tries (9s) to avoid spinning forever on a stuck real backend
+    if (attempts > 15) { clearInterval(pollTimer); docStatus.value = 'uploaded'; return }
     try {
       const d = await api.getDocument(id)
       docStatus.value = d.status
@@ -166,6 +171,7 @@ async function submitDiag() {
     const body = diag.value.questions.map((q) => ({ question_id: q.id, choice: answers[q.id] }))
     const res = await api.submitDiagnostic(store.goalId, body)
     diagResult.value = res
+    store.diagnosticResult = res
     step.value = 5
   } catch (e) {
     error.value = e.message

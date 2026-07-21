@@ -105,7 +105,7 @@ function decisionForVersion(vid) {
           <ConceptTag :term="term" />
           <span class="muted">{{ note }}</span>
         </div>
-        <div v-if="diff._rescheduled" class="row" style="gap:10px;">
+        <div v-if="diff._rescheduled?.length" class="row" style="gap:10px;">
           <span class="concept-tag" style="background:var(--warn-soft);color:var(--warn);border-color:#ecdcb4;">
             <span class="dot" style="background:var(--warn)"></span>Rescheduled
           </span>

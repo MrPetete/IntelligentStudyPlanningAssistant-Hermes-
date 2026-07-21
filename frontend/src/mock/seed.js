@@ -146,21 +146,30 @@ export const seedV1Tasks = [
 ]
 
 /**
- * V2 — verbatim from mock_api_examples/plan_version.json for the two
- * remediation tasks (ids 11,12), plus carried-forward tasks (same ids 1,3,4)
- * so the version is a complete plan and the diff shows real structure.
- * Diff V1 -> V2: added [11,12], removed [2], unchanged [1,3,4];
- * id 1 rescheduled 07-21 -> 07-20 (visible in side-by-side).
+ * V2 — FULL MERGE of V1 (all V1 tasks carried forward, status preserved)
+ * plus two appended Normalization remediation tasks (ids 11,12).
+ * Diff V1 -> V2: added [11,12], removed [], unchanged [1,2,3,4].
+ * The remediation tasks' descriptions are verbatim from mock_api_examples/plan_version.json.
  */
 export const seedV2Tasks = [
+  // --- carried forward from V1 (status preserved) ---
   {
     id: 1,
     concept_id: 1,
     canonical_term: 'Normalization',
-    day: '2026-07-20',
+    day: '2026-07-21',
     description: '阅读 1NF–3NF 理论，理解函数依赖。',
     est_minutes: 40,
     status: 'done'
+  },
+  {
+    id: 2,
+    concept_id: 1,
+    canonical_term: 'Normalization',
+    day: '2026-07-22',
+    description: '练习：找出给定关系中的更新异常。',
+    est_minutes: 40,
+    status: 'pending'
   },
   {
     id: 3,
@@ -180,11 +189,12 @@ export const seedV2Tasks = [
     est_minutes: 35,
     status: 'pending'
   },
+  // --- appended remediation (verbatim from mock_api_examples/plan_version.json) ---
   {
     id: 11,
     concept_id: 1,
     canonical_term: 'Normalization',
-    day: '2026-07-22',
+    day: '2026-07-23',
     description: 'Remediation: review 1NF-3NF with worked examples.',
     est_minutes: 40,
     status: 'pending'
@@ -193,18 +203,18 @@ export const seedV2Tasks = [
     id: 12,
     concept_id: 1,
     canonical_term: 'Normalization',
-    day: '2026-07-23',
+    day: '2026-07-24',
     description: 'Remediation: decompose 5 relations to 3NF.',
     est_minutes: 40,
     status: 'pending'
   }
 ]
 
-// Decisions — VERBATIM from mock_api_examples/agent_decision.json
+// Decisions — VERBATIM from mock_api_examples/agent_decision.json (decision #1 trigger updated to 'low_mastery' to match backend's real reason strings)
 export const seedDecisions = [
   {
     id: 1,
-    trigger: 'quiz_fail',
+    trigger: 'low_mastery',
     evidence_snapshot: {
       progress: { tasks_total: 5, tasks_done: 1, tasks_due: 5, tasks_incomplete: 4 },
       evidence_count: 4
@@ -218,7 +228,8 @@ export const seedDecisions = [
       { tool: 'get_current_plan', args: { goal_id: 1 }, result_summary: 'plan_version_id, version_no, tasks' },
       { tool: 'llm.decide_replan', args: { explanation_language: 'zh', evidence_count: 4 }, result_summary: 'decision=new_version' },
       { tool: 'validator.validate_plan', args: { attempt: 0 }, result_summary: 'ok' },
-      { tool: 'create_plan_version', args: { task_count: 2 }, result_summary: 'version_no=2' }
+      { tool: 'create_plan_version', args: { task_count: 2 }, result_summary: 'version_no=2' },
+      { tool: 'record_agent_decision', args: { decision_id: 1 }, result_summary: 'recorded' }
     ],
     decision: 'new_version',
     resulting_plan_version_id: 2,
