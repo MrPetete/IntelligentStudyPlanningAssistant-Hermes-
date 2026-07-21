@@ -103,10 +103,13 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
         })
         if vres.ok:
             created = tools.create_plan_version(session, goal_id, plan, created_by="agent")
+            # `plan` is the delta the LLM proposed; create_plan_version carries the
+            # parent's tasks forward and appends this delta (full merge). Label the
+            # trace as the ADDED count so the artifact isn't misread as the total.
             trace.append({
                 "tool": "create_plan_version",
-                "args": {"task_count": len(plan.get("tasks", []))},
-                "result_summary": f"version_no={created['version_no']}",
+                "args": {"added_task_count": len(plan.get("tasks", []))},
+                "result_summary": f"version_no={created['version_no']} (delta merged onto parent)",
             })
             result_version_id = created["plan_version_id"]
             break
