@@ -411,7 +411,7 @@ function route(method, path, body) {
 
   // POST /goals/{id}/replan  (manual replan control)
   if (m === 'POST' && p === `/goals/${goalId}/replan`) {
-    return doReplan(goalId, 'manual_replan', 'en')
+    return doReplan(goalId, 'explicit_user_request', 'en')
   }
 
   // POST /goals/{id}/simulate
@@ -434,7 +434,7 @@ function route(method, path, body) {
       state.currentVersion.set(goalId, nextNo)
       const dec = {
         id: (state.decisions.get(goalId).length || 0) + 1,
-        trigger: 'overdue_tasks',
+        trigger: 'behind_schedule',
         evidence_snapshot: { progress: { tasks_due: 8, tasks_incomplete: 6 }, evidence_count: 3 },
         reasoning_text: '25% of tasks are overdue. Added a catch-up task to recover the schedule.',
         tool_trace: [
@@ -451,7 +451,7 @@ function route(method, path, body) {
       return { scenario, evidence_created: 3, trigger_fired: true, decision_id: dec.id }
     }
     // default: normalization_failure -> reuse seed decision 1 pattern for this goal
-    return doReplan(goalId, 'quiz_fail', g.explanation_language)
+    return doReplan(goalId, 'low_mastery', g.explanation_language)
   }
 
   // GET /goals/{id}/decisions
@@ -504,7 +504,8 @@ function doReplan(goalId, trigger, lang) {
       { tool: 'get_current_plan', args: { goal_id: goalId }, result_summary: 'plan_version_id, version_no, tasks' },
       { tool: 'llm.decide_replan', args: { explanation_language: lang, evidence_count: 4 }, result_summary: 'decision=new_version' },
       { tool: 'validator.validate_plan', args: { attempt: 0 }, result_summary: 'ok' },
-      { tool: 'create_plan_version', args: { task_count: newTasks.length }, result_summary: `version_no=${nextNo}` }
+      { tool: 'create_plan_version', args: { task_count: newTasks.length }, result_summary: `version_no=${nextNo}` },
+      { tool: 'record_agent_decision', args: { decision_id: (state.decisions.get(goalId).length || 0) + 1 }, result_summary: 'recorded' }
     ],
     decision: 'new_version', resulting_plan_version_id: v.id, created_at: nowIso()
   }

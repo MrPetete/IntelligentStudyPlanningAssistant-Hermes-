@@ -15,8 +15,9 @@ const err = ref('')
 function phaseOf(tool) {
   if (tool.startsWith('get_') || tool === 'search_learning_material') return 'read'
   if (tool.startsWith('llm.')) return 'reason'
-  if (tool.startsWith('create_') || tool.startsWith('record_') || tool.startsWith('validator')) return 'act'
+  // RECORD phase: record_agent_decision (check BEFORE generic create_/record_ → act rule)
   if (tool.startsWith('record_agent_decision')) return 'record'
+  if (tool.startsWith('create_') || tool.startsWith('validator')) return 'act'
   return 'reason'
 }
 const PHASE_META = {
