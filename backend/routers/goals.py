@@ -6,12 +6,16 @@ upload is a PLACEHOLDER that records a filename/status but does no extraction.
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+import logging
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFile
 from sqlmodel import Session, select
 
+import ingestion
 import models
+import storage
 from config import SINGLE_USER_ID, SUPPORTED_LANGUAGES
-from db import get_session
+from db import get_session, session_scope
 from schemas import DocumentStatusOut, GoalCreate, GoalOut, LanguageUpdate
 
 router = APIRouter(prefix="/goals", tags=["goals"])
@@ -80,27 +84,136 @@ def set_language(goal_id: int, body: LanguageUpdate,
 
 
 @router.post("/{goal_id}/document", response_model=DocumentStatusOut)
-def upload_document(goal_id: int, file: UploadFile | None = None,
-                    session: Session = Depends(get_session)) -> DocumentStatusOut:
+async def upload_document(goal_id: int, background: BackgroundTasks,
+                          file: UploadFile | None = None,
+                          session: Session = Depends(get_session)) -> DocumentStatusOut:
     """
-    PLACEHOLDER: records the upload but performs NO extraction in Phase 0.
-    Real text extraction + concept generation is Member C's work (see 04 context).
-    In the demo, concepts are seeded rather than extracted live.
+    A4: save the file (if any), mark it `processing`, schedule the extract ->
+    concept-map pipeline as a background task, and RETURN IMMEDIATELY. The
+    frontend then polls GET /goals/{id}/document for none->processing->ready/failed.
+
+    The file is OPTIONAL. With no material (no file, or an empty one) we still
+    produce a usable concept map from the goal topic alone (D4 fallback), so
+    onboarding never blocks on having a document — the no-file path the
+    placeholder endpoint supported keeps working.
+
+    The heavy work (text extraction + real concept extraction, which may hit
+    the live model) runs in `_process_document` after the response is sent, so
+    onboarding never blocks on it (Option C flow).
     """
     goal = session.get(models.Goal, goal_id)
     if not goal:
         raise HTTPException(404, "goal not found")
-    filename = file.filename if file else "seeded_sample.pdf"
+
+    content = await file.read() if file is not None else b""
+
+    # With material, persist bytes to disk (Member C's storage helper) before
+    # returning. Without, storage_path stays None and the background task uses
+    # the goal-topic fallback.
+    storage_path: str | None = None
+    filename: str | None = None
+    if content:
+        filename = file.filename or "upload"
+        storage_path = storage.save_upload(goal_id, filename, content)
+
     doc = session.exec(
         select(models.Document).where(models.Document.goal_id == goal_id)
     ).first()
     if doc:
-        doc.filename, doc.status = filename, "uploaded"
+        doc.filename, doc.storage_path, doc.status = filename, storage_path, "processing"
     else:
-        doc = models.Document(goal_id=goal_id, filename=filename, status="uploaded")
+        doc = models.Document(goal_id=goal_id, filename=filename,
+                              storage_path=storage_path, status="processing")
     session.add(doc)
     session.commit()
-    return DocumentStatusOut(goal_id=goal_id, filename=filename, status="uploaded")
+
+    # Schedule the pipeline; the response is sent first, work runs after.
+    background.add_task(_process_document, goal_id, storage_path,
+                        goal.explanation_language, goal.goal_text)
+    return DocumentStatusOut(goal_id=goal_id, filename=filename, status="processing")
+
+
+def _process_document(goal_id: int, storage_path: str | None,
+                      explanation_language: str, goal_text: str) -> None:
+    """
+    Background pipeline (runs AFTER the upload response). Owns its own session
+    (the request's is already closed). Extracts text -> builds the real concept
+    map (with C's goal-topic fallback for broken/empty files) -> writes concepts
+    -> status `ready`. On any failure, status `failed` and, if possible, the
+    goal-topic fallback still yields a usable concept list (D4).
+
+    `storage_path` is None when no file was uploaded: skip extraction and go
+    straight to the goal-topic map (still `ready`, source='goal_topic').
+
+    Never raises — a background task has no caller to catch it; every outcome
+    is recorded as a document status.
+    """
+    with session_scope() as session:
+        try:
+            material_text = ""
+            if storage_path:
+                try:
+                    material_text = ingestion.extract_text(storage_path)
+                except ingestion.UnsupportedDocumentError:
+                    # Out-of-scope file type -> treat as no usable material; the
+                    # goal-topic fallback below still produces a concept list.
+                    material_text = ""
+
+            # build_concept_map runs the real extract_concepts on usable text,
+            # and falls back to a goal-topic map on empty/broken text OR a model
+            # error (D4). Passing goal_text guarantees a usable list either way —
+            # including the no-file case (material_text stays "").
+            concepts = ingestion.build_concept_map(
+                material_text, explanation_language, goal_text=goal_text
+            )
+            _write_concepts(session, goal_id, concepts)
+            _set_document_status(session, goal_id, "ready")
+        except Exception as exc:  # noqa: BLE001 — background task must not propagate
+            # Last-resort: even the goal-topic fallback failed (e.g. model down).
+            # Mark failed so the frontend shows a retry state; do not leave the
+            # document stuck in `processing`.
+            _set_document_status(session, goal_id, "failed", reason=str(exc))
+
+
+def _write_concepts(session: Session, goal_id: int, concepts: list) -> None:
+    """Replace this goal's unconfirmed concept set with the freshly extracted
+    ones (mirrors routers/concepts.py extraction write). Confirmed concepts are
+    left alone so a re-upload never destroys the user's confirmed grounding."""
+    existing = session.exec(
+        select(models.Concept)
+        .where(models.Concept.goal_id == goal_id)
+        .where(models.Concept.confirmed == False)  # noqa: E712
+    ).all()
+    for c in existing:
+        session.delete(c)
+    session.flush()
+    for item in concepts:
+        session.add(models.Concept(
+            goal_id=goal_id,
+            canonical_term=item["canonical_term"],
+            name=item.get("name", item["canonical_term"]),
+            explanation=item.get("explanation"),
+            order_index=item.get("order_index"),
+            source=item.get("source", "material"),
+            confirmed=False,
+        ))
+
+
+def _set_document_status(session: Session, goal_id: int, status: str,
+                         reason: str | None = None) -> None:
+    doc = session.exec(
+        select(models.Document).where(models.Document.goal_id == goal_id)
+    ).first()
+    if doc:
+        doc.status = status
+        session.add(doc)
+    if status == "failed" and reason:
+        # The frozen `documents` schema has no reason column and DocumentStatusOut
+        # doesn't expose one, so we log rather than silently drop it. Single-user
+        # dev tool — stderr is enough to diagnose a failed upload.
+        logging.getLogger("tracelearn.ingestion").warning(
+            "document processing failed for goal_id=%s: %s", goal_id, reason
+        )
 
 
 @router.get("/{goal_id}/document", response_model=DocumentStatusOut)

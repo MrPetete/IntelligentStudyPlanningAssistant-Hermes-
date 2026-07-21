@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 
 import models
 from agent import llm_client
+from agent.llm_client import LLMUnavailableError
 from config import DIAGNOSTIC_NUM_QUESTIONS
 from db import get_session
 from schemas import (
@@ -39,11 +40,16 @@ def generate_diagnostic(goal_id: int, session: Session = Depends(get_session)) -
         raise HTTPException(400, "confirm a concept map first")
 
     concept_dicts = [{"id": c.id, "canonical_term": c.canonical_term} for c in concepts]
-    questions = llm_client.generate_diagnostic(
-        concepts=concept_dicts,
-        num_questions=DIAGNOSTIC_NUM_QUESTIONS,
-        explanation_language=goal.explanation_language,
-    )
+    try:
+        questions = llm_client.generate_diagnostic(
+            concepts=concept_dicts,
+            num_questions=DIAGNOSTIC_NUM_QUESTIONS,
+            explanation_language=goal.explanation_language,
+        )
+    except LLMUnavailableError as exc:
+        # A3: live model unavailable -> clean, retryable error (never a 500).
+        raise HTTPException(502, {"error": "diagnostic generation unavailable, please retry",
+                                  "detail": str(exc)}) from exc
 
     diag = models.Diagnostic(goal_id=goal_id, questions_json=json.dumps(questions, ensure_ascii=False))
     session.add(diag)

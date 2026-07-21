@@ -12,6 +12,7 @@ from sqlmodel import Session, select
 
 import models
 from agent import llm_client
+from agent.llm_client import LLMUnavailableError
 from db import get_session
 from schemas import ConceptConfirm, ConceptOut
 
@@ -37,7 +38,12 @@ def extract_concepts(goal_id: int, session: Session = Depends(get_session)) -> l
     if not goal:
         raise HTTPException(404, "goal not found")
 
-    raw = llm_client.extract_concepts(material_text="", explanation_language=goal.explanation_language)
+    try:
+        raw = llm_client.extract_concepts(material_text="", explanation_language=goal.explanation_language)
+    except LLMUnavailableError as exc:
+        # A3: live model unavailable -> clean, retryable error (never a 500).
+        raise HTTPException(502, {"error": "concept extraction unavailable, please retry",
+                                  "detail": str(exc)}) from exc
     created: list[models.Concept] = []
     for item in raw:
         c = models.Concept(
