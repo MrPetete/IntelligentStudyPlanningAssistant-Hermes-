@@ -22,7 +22,7 @@ Language = Literal["en", "zh"]
 class GoalCreate(BaseModel):
     goal_text: str
     deadline: str                       # ISO date
-    weekly_hours: float
+    hours_per_day: float                # study hours committed per day
     explanation_language: Language = "en"
 
 
@@ -30,7 +30,7 @@ class GoalOut(BaseModel):
     id: int
     goal_text: str
     deadline: str
-    weekly_hours: float
+    hours_per_day: float
     explanation_language: Language
     document_status: str = "none"       # convenience mirror of the document state
     created_at: str
@@ -127,6 +127,10 @@ class PlanVersionOut(BaseModel):
     parent_version_id: int | None = None
     created_at: str
     tasks: list[TaskOut] = Field(default_factory=list)
+    # Honest feasibility note when a tight deadline forced a trimmed core plan
+    # (e.g. "Tight deadline: core 6 of 20 concepts covered; rest deferred.").
+    # None when the plan covers every confirmed concept.
+    coverage_note: str | None = None
 
 
 class PlanVersionSummary(BaseModel):

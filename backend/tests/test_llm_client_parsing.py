@@ -230,7 +230,7 @@ def test_mock_decide_replan_dates_are_relative_and_valid_today():
     for t in plan["tasks"]:
         t["concept_id"] = 1  # normally resolved by the orchestrator
     result = validate_plan(
-        plan=plan, weekly_hours=6.0, deadline="2026-08-10",
+        plan=plan, hours_per_day=6.0, deadline="2026-08-10",
         today=date.today().isoformat(), valid_concept_ids={1}, weak_concept_ids={1},
     )
     assert result.ok, f"mock replan dates rejected by validator: {result.errors}"
