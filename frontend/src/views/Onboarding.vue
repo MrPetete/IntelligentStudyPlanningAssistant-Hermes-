@@ -25,10 +25,20 @@ const steps = [
 const goalForm = reactive({
   goal_text: '',
   deadline: '',
-  weekly_hours: 6,
+  hours_per_day: 2,
   explanation_language: 'en',
   filename: ''
 })
+// Realistic cap: hours left until deadline (same-day = until midnight; future = 16h)
+const maxHoursPerDay = computed(() => {
+  if (!goalForm.deadline) return 16
+  const now = new Date()
+  const dl = new Date(goalForm.deadline + 'T23:59:59')
+  const sameDay = dl.toDateString() === now.toDateString()
+  if (sameDay) return Math.max(1, Math.floor((dl - now) / 3.6e6))
+  return 16
+})
+watch(maxHoursPerDay, (m) => { if (goalForm.hours_per_day > m) goalForm.hours_per_day = m })
 const fileInput = ref(null)
 function onPickFile(e) {
   const f = e.target.files?.[0]
@@ -198,20 +208,35 @@ function scorePct(cid) {
 // ---- Screen 5: roadmap reveal ----
 const plan = ref(null)
 const planGenerating = ref(false)
+const planError = ref(null)
 async function generatePlan() {
   planGenerating.value = true
   error.value = ''
+  planError.value = null
   try {
     const v = await api.generatePlan(store.goalId)
     plan.value = v
     await initGoal(store.goalId) // refresh store so nav shows goal + versions
   } catch (e) {
+    planError.value = e
     error.value = e.message
   } finally {
     planGenerating.value = false
   }
 }
 function goToApp() { router.push('/home') }
+
+const friendlyPlanError = computed(() => {
+  const e = planError.value
+  const code = e?.code, status = e?.status
+  if (code === 'deadline_too_tight')
+    return 'Your deadline is very close for this much material. Try extending the '
+         + 'deadline or increasing your daily study hours, then retry.'
+  if (status === 502)
+    return 'The planning service is busy right now. Please retry in a moment.'
+  return 'Something went wrong generating your roadmap. Please retry — if it keeps '
+       + 'failing, try adjusting your deadline or daily hours.'
+})
 
 // enter concept load when arriving at step 3
 watch(step, (s) => {
@@ -254,8 +279,10 @@ onUnmounted(() => clearInterval(pollTimer))
             <input type="date" v-model="goalForm.deadline" />
           </div>
           <div style="flex:1">
-            <div class="label">Weekly study hours</div>
-            <input type="number" min="1" max="60" v-model.number="goalForm.weekly_hours" />
+            <div class="label">Study hours per day</div>
+            <select v-model.number="goalForm.hours_per_day">
+              <option v-for="h in maxHoursPerDay" :key="h" :value="h">{{ h }}</option>
+            </select>
           </div>
         </div>
         <div>
@@ -409,12 +436,26 @@ onUnmounted(() => clearInterval(pollTimer))
       <div class="eyebrow" style="color:var(--user);">Your roadmap · Version 1</div>
       <h2 style="margin-top:4px;">Here's where to start</h2>
       <div v-if="planGenerating" class="empty" style="margin-top:14px;">Generating your roadmap…</div>
-      <div v-else>
+
+      <!-- failure state: plan gen errored and we have no plan -->
+      <div v-else-if="error && !plan" class="card"
+           style="margin-top:14px;padding:16px;border-color:#f0cfc6;background:#fdf1ee;">
+        <strong style="color:var(--danger);">Couldn't build your roadmap</strong>
+        <p class="muted" style="margin:8px 0 12px;">{{ friendlyPlanError }}</p>
+        <button class="primary" @click="generatePlan()">Retry</button>
+      </div>
+
+      <!-- success state -->
+      <div v-else-if="plan && plan.tasks">
         <div v-if="diagResult" class="card" style="padding:10px 14px;background:var(--user-soft);border-color:#cfe9dd;margin-bottom:14px;">
           <strong>Flagged weak concepts:</strong>
           <span v-for="c in concepts.filter(c => scorePct(c.id) !== null && scorePct(c.id) < 60)" :key="c.id" style="margin-left:6px;">
             <ConceptTag :term="c.canonical_term" />
           </span>
+        </div>
+        <div v-if="plan.coverage_note" class="card"
+             style="padding:10px 14px;background:var(--surface-2);margin-bottom:14px;">
+          <span class="faint">{{ plan.coverage_note }}</span>
         </div>
         <div class="stack">
           <div v-for="t in plan.tasks" :key="t.id" class="task-row row" style="padding:10px 12px;">

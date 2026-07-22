@@ -12,7 +12,22 @@
 import { handleMock, resetMock } from './mock/server.js'
 
 const REAL_BASE = 'http://127.0.0.1:8000'
-// Vite injects import.meta.env; in Node (scripts, tests) it's undefined → default to mock.
+// ---------------------------------------------------------------------------
+// Error normalization — surfaces structured errors (.status, .code, real string)
+// on BOTH mock and real paths, so the UI can actually map them.
+// ---------------------------------------------------------------------------
+function throwApiError(status, data, method, path) {
+  const detail = data && data.detail
+  const isObj = detail && typeof detail === 'object'
+  const err = new Error(
+    isObj ? (detail.detail || detail.error || String(status))
+          : (detail || `${status} ${method} ${path}`)
+  )
+  err.status = status                           // e.g. 422, 502
+  err.code = isObj ? detail.error : undefined   // e.g. 'deadline_too_tight'
+  err.body = detail
+  throw err
+}
 const _env = typeof import.meta !== 'undefined' && import.meta.env ? import.meta.env : {}
 const USE_REAL = _env.VITE_USE_REAL === 'true' // set in .env: VITE_USE_REAL=true
 
@@ -21,7 +36,9 @@ async function request(method, path, body) {
   if (!USE_REAL) {
     // Simulate network latency so loading states are exercised.
     await new Promise((r) => setTimeout(r, 120 + Math.random() * 220))
-    return handleMock(method, path, body)
+    const r = handleMock(method, path, body)
+    if (r && r.ok === false) throwApiError(r.status, r.data, method, path)
+    return r
   }
   const isForm = body instanceof FormData
   const res = await fetch(url, {
@@ -30,7 +47,7 @@ async function request(method, path, body) {
     body: isForm ? body : (body ? JSON.stringify(body) : undefined)
   })
   const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.detail || `${res.status} ${method} ${path}`)
+  if (!res.ok) throwApiError(res.status, data, method, path)
   return { ok: true, status: res.status, data }
 }
 

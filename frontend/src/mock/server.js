@@ -227,7 +227,7 @@ function route(method, path, body) {
       id,
       goal_text: body.goal_text,
       deadline: body.deadline,
-      weekly_hours: body.weekly_hours,
+      hours_per_day: body.hours_per_day,
       explanation_language: body.explanation_language || 'en',
       document_status: body.filename ? 'uploaded' : 'none',
       created_at: nowIso()
@@ -448,7 +448,7 @@ function route(method, path, body) {
         evidence_snapshot: { progress: { tasks_due: 8, tasks_incomplete: 6 }, evidence_count: 3 },
         reasoning_text: '25% of tasks are overdue. Added a catch-up task to recover the schedule.',
         tool_trace: [
-          { tool: 'get_learner_state', args: { goal_id: goalId }, result_summary: 'goal, deadline, weekly_hours' },
+          { tool: 'get_learner_state', args: { goal_id: goalId }, result_summary: 'goal, deadline, hours_per_day' },
           { tool: 'get_progress_summary', args: { goal_id: goalId }, result_summary: 'tasks_due=8, tasks_incomplete=6' },
           { tool: 'get_evidence_since_last_plan', args: { goal_id: goalId }, result_summary: '3 items' },
           { tool: 'llm.decide_replan', args: { explanation_language: g.explanation_language }, result_summary: 'decision=new_version' },
