@@ -75,6 +75,17 @@ TOP_K = 5
 EMBEDDING_MODEL = None  # not used in MVP
 
 # ---------------------------------------------------------------------------
+# Logging (local, privacy-safe, persistent — see logging_config.py)
+# Operational metadata only (times, endpoints, model ids, durations, errors,
+# decision types); NEVER request bodies, goal/document content, or the API key.
+# Size-based rotation so the log persists across restarts and is not time-wiped.
+# ---------------------------------------------------------------------------
+LOG_DIR = os.getenv("LOG_DIR", "./logs")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")             # DEBUG for verbose local debugging
+LOG_MAX_BYTES = int(os.getenv("LOG_MAX_BYTES", str(5 * 1024 * 1024)))  # 5 MB per file
+LOG_BACKUP_COUNT = int(os.getenv("LOG_BACKUP_COUNT", "5"))             # keep 5 rolled-over files
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 SINGLE_USER_ID = 1     # MVP hardcodes one user (no auth — Decision: no authentication)

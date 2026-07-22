@@ -22,6 +22,9 @@ from config import (
     MODEL_PLAN,
     MODEL_REPLAN,
 )
+from logging_config import get_logger
+
+_log = get_logger("llm")
 
 
 class LLMUnavailableError(RuntimeError):
@@ -241,15 +244,29 @@ def _complete_and_parse(
     """
     from agent.hermes_client import HermesError, complete
 
+    # Operational logging only: task name, model id, attempt, duration, outcome.
+    # We NEVER log system_prompt / user_prompt / raw response — those carry the
+    # user's goal text, document content, and the model's reasoning.
     last_error: Exception | None = None
     for attempt in range(LLM_MAX_RETRIES + 1):
+        start = time.perf_counter()
         try:
             raw = complete(system=system_prompt, user=user_prompt, json_mode=True, model=model)
-            return parse(raw)
+            result = parse(raw)
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            _log.info("%s ok (model=%s, attempt=%d/%d, %.0fms)",
+                      what, model or "default", attempt + 1, LLM_MAX_RETRIES + 1, elapsed_ms)
+            return result
         except (HermesError, ValueError) as exc:
             last_error = exc
+            elapsed_ms = (time.perf_counter() - start) * 1000
+            _log.warning("%s attempt %d/%d failed (model=%s, %.0fms): %s: %s",
+                         what, attempt + 1, LLM_MAX_RETRIES + 1, model or "default",
+                         elapsed_ms, type(exc).__name__, exc)
             if attempt < LLM_MAX_RETRIES:
                 time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    _log.error("%s UNAVAILABLE after %d attempts (model=%s): %s",
+               what, LLM_MAX_RETRIES + 1, model or "default", last_error)
     raise LLMUnavailableError(
         f"{what} failed after {LLM_MAX_RETRIES + 1} attempts: {last_error}"
     ) from last_error

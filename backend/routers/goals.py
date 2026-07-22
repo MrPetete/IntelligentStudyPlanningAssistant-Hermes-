@@ -16,7 +16,10 @@ import models
 import storage
 from config import SINGLE_USER_ID, SUPPORTED_LANGUAGES
 from db import get_session, session_scope
+from logging_config import get_logger
 from schemas import DocumentStatusOut, GoalCreate, GoalOut, LanguageUpdate
+
+_log = get_logger("ingestion")
 
 router = APIRouter(prefix="/goals", tags=["goals"])
 
@@ -148,6 +151,10 @@ def _process_document(goal_id: int, storage_path: str | None,
     Never raises — a background task has no caller to catch it; every outcome
     is recorded as a document status.
     """
+    # Operational logging only: goal_id, whether a file was present, and the
+    # resulting status + concept count. Never logs the document text or the
+    # extracted concept names.
+    _log.info("document pipeline start (goal_id=%s, has_file=%s)", goal_id, storage_path is not None)
     with session_scope() as session:
         try:
             material_text = ""
@@ -168,7 +175,12 @@ def _process_document(goal_id: int, storage_path: str | None,
             )
             _write_concepts(session, goal_id, concepts)
             _set_document_status(session, goal_id, "ready")
+            _log.info("document pipeline -> ready (goal_id=%s, concept_count=%d, source=%s)",
+                      goal_id, len(concepts),
+                      concepts[0].get("source") if concepts else "none")
         except Exception as exc:  # noqa: BLE001 — background task must not propagate
+            _log.error("document pipeline -> failed (goal_id=%s): %s: %s",
+                       goal_id, type(exc).__name__, exc)
             # Last-resort: even the goal-topic fallback failed (e.g. model down).
             # Mark failed so the frontend shows a retry state; do not leave the
             # document stuck in `processing`.

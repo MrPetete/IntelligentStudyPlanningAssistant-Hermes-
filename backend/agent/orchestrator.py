@@ -28,6 +28,9 @@ from agent import llm_client, planmerge, tools
 from agent.llm_client import LLMUnavailableError
 from agent.validator import validate_plan
 from config import LLM_MAX_RETRIES, TRIGGERS
+from logging_config import get_logger
+
+_log = get_logger("agent")
 
 
 def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, Any]:
@@ -35,6 +38,7 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
     Execute one agent invocation. Returns a summary dict incl. the decision_id.
     Assumes the deterministic trigger already decided this should run.
     """
+    _log.info("agent run start (goal_id=%s, trigger=%s)", goal_id, trigger_reason)
     trace: list[dict[str, Any]] = []
 
     # --- read tools, fixed order -------------------------------------------
@@ -78,6 +82,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
             _model_unavailable_reasoning(lang),
             trace, "no_change", None,
         )
+        _log.warning("agent run -> no_change (goal_id=%s, reason=llm_unavailable, decision_id=%s)",
+                     goal_id, rec["decision_id"])
         return {"decision": "no_change", "decision_id": rec["decision_id"],
                 "note": "llm_unavailable"}
     trace.append({
@@ -95,6 +101,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
             reasoning or "No change needed based on current evidence.",
             trace, "no_change", None,
         )
+        _log.info("agent run -> no_change (goal_id=%s, model decided no change, decision_id=%s)",
+                  goal_id, rec["decision_id"])
         return {"decision": "no_change", "decision_id": rec["decision_id"]}
 
     # --- resolve canonical_term -> concept_id ------------------------------
@@ -119,6 +127,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
             reasoning or "No change: the current plan already covers this remediation.",
             trace, "no_change", None,
         )
+        _log.info("agent run -> no_change (goal_id=%s, reason=delta_already_present, decision_id=%s)",
+                  goal_id, rec["decision_id"])
         return {"decision": "no_change", "decision_id": rec["decision_id"],
                 "note": "delta_already_present"}
 
@@ -179,6 +189,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
                 reasoning + f"  [Proposed plan rejected by validator: {vres.errors}]",
                 trace, "no_change", None,
             )
+            _log.warning("agent run -> no_change (goal_id=%s, reason=validation_failed, errors=%s, decision_id=%s)",
+                         goal_id, vres.errors, rec["decision_id"])
             return {"decision": "no_change", "decision_id": rec["decision_id"],
                     "note": "validation_failed"}
 
@@ -187,6 +199,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
         session, goal_id, trigger_reason, evidence_snapshot,
         reasoning, trace, "new_version", result_version_id,
     )
+    _log.info("agent run -> new_version (goal_id=%s, plan_version_id=%s, decision_id=%s)",
+              goal_id, result_version_id, rec["decision_id"])
     return {"decision": "new_version", "decision_id": rec["decision_id"],
             "plan_version_id": result_version_id}
 
