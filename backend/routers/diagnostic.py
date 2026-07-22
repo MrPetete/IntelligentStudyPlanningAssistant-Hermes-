@@ -83,10 +83,21 @@ def submit_diagnostic(goal_id: int, body: DiagnosticSubmit,
     answers = {a.question_id: a.choice for a in body.answers}
 
     # Tally correct/total per concept.
+    #
+    # The stored answer key is an option LETTER ("A".."D"); the client submits
+    # the option TEXT it selected (frontend binds the radio :value to the option
+    # string). So resolve the letter to its option text before comparing. We
+    # also accept a submitted letter directly, which keeps the degenerate mock
+    # case (options == ["A","B","C","D"]) and any letter-submitting client green.
     per_concept: dict[int, list[int]] = {}
     for qid, q in questions.items():
         cid = q["concept_id"]
-        correct = 1 if answers.get(qid) == q.get("answer") else 0
+        submitted = answers.get(qid)
+        letter = (q.get("answer") or "").strip().upper()
+        options = q.get("options") or []
+        idx = ord(letter) - ord("A") if len(letter) == 1 and "A" <= letter <= "Z" else -1
+        correct_text = options[idx] if 0 <= idx < len(options) else None
+        correct = 1 if submitted is not None and submitted in (correct_text, letter) else 0
         bucket = per_concept.setdefault(cid, [0, 0])
         bucket[0] += correct
         bucket[1] += 1

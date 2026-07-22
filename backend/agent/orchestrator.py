@@ -125,6 +125,21 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
     # --- validate (bounded) ------------------------------------------------
     valid_ids = _confirmed_concept_ids(session, goal_id)
     weak_ids = _weak_concept_ids(learner_state)
+    # Full-merge model: create_plan_version carries EVERY parent task forward and
+    # appends this delta (planmerge.merge_tasks). We validate only the delta for
+    # the per-task rules (schedule/budget) because carried-forward tasks are
+    # immutable, already-validated history. But Rule 5b (weak-concept coverage)
+    # is a GLOBAL property of the persisted plan: a weak concept already covered
+    # by a carried-forward parent task is NOT dropped, even though it's absent
+    # from the delta. So only require the delta to cover weak concepts the parent
+    # plan does not already cover — otherwise a valid remediation-only delta is
+    # falsely rejected for "dropping" concepts it never touched. (Parent tasks are
+    # never dropped in full-merge, so parent-covered weak concepts are always safe.)
+    parent_covered = {
+        t.get("concept_id") for t in current_plan.get("tasks", [])
+        if t.get("concept_id") is not None
+    }
+    weak_ids = weak_ids - parent_covered
     today = date.today().isoformat()
     deadline = learner_state.get("deadline", today)
     weekly_hours = learner_state.get("weekly_hours", 0.0)
