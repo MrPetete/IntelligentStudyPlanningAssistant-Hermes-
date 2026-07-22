@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 
 import models
 from agent import llm_client, tools
+from agent.llm_client import LLMUnavailableError
 from agent.validator import validate_plan
 from db import get_session
 from schemas import PlanDiff, PlanVersionOut, PlanVersionSummary, TaskOut
@@ -53,10 +54,15 @@ def generate_plan(goal_id: int, session: Session = Depends(get_session)) -> Plan
         raise HTTPException(400, "confirm a concept map first")
 
     concept_dicts = [{"id": c.id, "canonical_term": c.canonical_term} for c in concepts]
-    plan = llm_client.generate_plan(
-        goal={"deadline": goal.deadline, "weekly_hours": goal.weekly_hours},
-        concepts=concept_dicts, scores={}, explanation_language=goal.explanation_language,
-    )
+    try:
+        plan = llm_client.generate_plan(
+            goal={"deadline": goal.deadline, "weekly_hours": goal.weekly_hours},
+            concepts=concept_dicts, scores={}, explanation_language=goal.explanation_language,
+        )
+    except LLMUnavailableError as exc:
+        # A3: live model unavailable -> clean, retryable error (never a 500).
+        raise HTTPException(502, {"error": "plan generation unavailable, please retry",
+                                  "detail": str(exc)}) from exc
 
     valid_ids = {c.id for c in concepts if c.confirmed}
     vres = validate_plan(

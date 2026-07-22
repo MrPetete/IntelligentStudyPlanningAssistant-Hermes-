@@ -11,10 +11,47 @@ even while the model is fake.
 """
 from __future__ import annotations
 
+import time
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, Callable
 
-from config import MOCK_LLM
+from config import (
+    LLM_MAX_RETRIES,
+    MOCK_LLM,
+    MODEL_GENERATION,
+    MODEL_LADDER,
+    MODEL_PLAN,
+    MODEL_REPLAN,
+)
+from logging_config import get_logger
+
+_log = get_logger("llm")
+
+
+def _ladder_from(model: str | None) -> list[tuple[str, int]]:
+    """Return the escalation ladder starting at ``model``'s tier.
+
+    If ``model`` is a known tier in MODEL_LADDER, return that tier and every
+    stronger tier after it (so a call starting at Sonnet can escalate to Opus,
+    but never back down to Haiku). If ``model`` is None or a custom id not in
+    the ladder, fall back to a single-tier "ladder" with the legacy
+    LLM_MAX_RETRIES budget — preserving the original behavior (and the
+    failure-handling tests) for any call that doesn't opt into tiered routing.
+    """
+    if model is not None:
+        for i, (tier_model, _attempts) in enumerate(MODEL_LADDER):
+            if tier_model == model:
+                return MODEL_LADDER[i:]
+    return [(model, LLM_MAX_RETRIES + 1)]
+
+
+class LLMUnavailableError(RuntimeError):
+    """Raised when a `_real_*` call exhausts its bounded retries (transport
+    failure, empty response, or unparseable JSON every attempt). Callers
+    handle it: onboarding surfaces a retryable error; the replan orchestrator
+    falls back to a recorded `no_change`. This is the ONE error type the rest
+    of the app catches from this module — `HermesError` and parser
+    `ValueError` are internal to the retry loop below (A3)."""
 
 
 # ---------------------------------------------------------------------------
@@ -193,11 +230,226 @@ def _mock_decide_replan(evidence: list[dict[str, Any]], lang: str) -> dict[str, 
 
 
 # ---------------------------------------------------------------------------
-# REAL implementations — TODO (later phase, once Hermes endpoint is wired).
-# Kept as explicit stubs so the swap point is obvious.
+# REAL implementations — live LMU (Anthropic Messages) calls.
+#
+# A2 wires each seam: build prompts (already drafted) -> hermes_client.complete
+# -> feed raw text into the matching real parser -> return the exact _mock_*
+# shape. A3 wraps the network+parse in `_complete_and_parse` so a transient
+# transport hiccup or a one-off malformed response is retried (bounded) before
+# giving up with LLMUnavailableError.
 # ---------------------------------------------------------------------------
-def _real_decide_replan(**kwargs: Any) -> dict[str, Any]:  # pragma: no cover
-    raise NotImplementedError("Wire Hermes tool-calling here; set MOCK_LLM=False.")
+_RETRY_BACKOFF_SECONDS = 0.5  # short, linear backoff between bounded retries
+
+
+def _complete_and_parse(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    parse: Callable[[str], Any],
+    model: str | None = None,
+    what: str,
+) -> Any:
+    """Call the live model and parse its response, walking the escalation ladder.
+
+    Starts at ``model``'s tier and tries it up to that tier's attempt budget.
+    Retries on BOTH transport failure (`HermesError`) and a structurally broken
+    response (the parser's `ValueError`) — a live model occasionally returns
+    prose or truncated JSON. If a tier is exhausted, ESCALATE to the next
+    stronger tier (haiku -> sonnet -> opus) for this one call, logging the
+    escalation. The top tier is terminal: if it still fails, raise an
+    explanatory `LLMUnavailableError` rather than looping forever. A call whose
+    ``model`` isn't a ladder tier (or is None) keeps the legacy single-tier
+    behavior with the `LLM_MAX_RETRIES` budget.
+
+    Imported here (not at module top) so mock-mode never imports httpx and
+    tests that monkeypatch `hermes_client.complete` patch the same object we call.
+    """
+    from agent.hermes_client import HermesError, complete
+
+    # Operational logging only: task name, model id, attempt, duration, outcome.
+    # We NEVER log system_prompt / user_prompt / raw response — those carry the
+    # user's goal text, document content, and the model's reasoning.
+    ladder = _ladder_from(model)
+    last_error: Exception | None = None
+    for tier_index, (tier_model, tier_attempts) in enumerate(ladder):
+        is_top_tier = tier_index == len(ladder) - 1
+        for attempt in range(tier_attempts):
+            start = time.perf_counter()
+            try:
+                raw = complete(system=system_prompt, user=user_prompt,
+                               json_mode=True, model=tier_model)
+                result = parse(raw)
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                _log.info("%s ok (model=%s, tier=%d/%d, attempt=%d/%d, %.0fms)",
+                          what, tier_model or "default", tier_index + 1, len(ladder),
+                          attempt + 1, tier_attempts, elapsed_ms)
+                return result
+            except (HermesError, ValueError) as exc:
+                last_error = exc
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                _log.warning("%s attempt %d/%d failed (model=%s, tier=%d/%d, %.0fms): %s: %s",
+                             what, attempt + 1, tier_attempts, tier_model or "default",
+                             tier_index + 1, len(ladder), elapsed_ms,
+                             type(exc).__name__, exc)
+                if attempt < tier_attempts - 1:
+                    time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        # Tier exhausted. Escalate to the next tier if there is one.
+        if not is_top_tier:
+            next_model = ladder[tier_index + 1][0]
+            _log.warning("%s escalating %s -> %s after %d failed attempts",
+                         what, tier_model or "default", next_model, tier_attempts)
+    _log.error("%s UNAVAILABLE after exhausting the model ladder (last model=%s): %s",
+               what, ladder[-1][0] or "default", last_error)
+    raise LLMUnavailableError(
+        f"{what} failed after exhausting the model ladder "
+        f"({' -> '.join(str(m) for m, _ in ladder)}); last error: {last_error}"
+    ) from last_error
+
+
+def _real_decide_replan(
+    *,
+    learner_state: dict[str, Any],
+    progress: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    current_plan: dict[str, Any],
+    explanation_language: str,
+) -> dict[str, Any]:
+    system_prompt = _decide_replan_system_prompt(explanation_language)
+    user_prompt = _decide_replan_user_prompt(learner_state, progress, evidence, current_plan)
+    # decide_replan is the one call that truly reasons over evidence -> strongest model.
+    return _complete_and_parse(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        parse=_parse_decide_replan_response,
+        model=MODEL_REPLAN,
+        what="decide_replan",
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. Replan decision (Member A's own prompt + parser — the tool-calling point)
+# ---------------------------------------------------------------------------
+def _decide_replan_system_prompt(lang: str) -> str:
+    return (
+        "You are a learning-path planning assistant. You revise a student's "
+        "study roadmap based on EVIDENCE of how their learning is going, "
+        "grounded in their confirmed concept map. A deterministic trigger has "
+        "already decided this is worth reviewing — your job is to judge whether "
+        "the plan should change, and if so, propose the delta.\n\n"
+        "Reason internally in English. Reference concepts by their "
+        "`canonical_term` (preserved verbatim, e.g. \"Normalization\"), and "
+        "cite the SPECIFIC evidence (low quiz score, skipped/overdue tasks) that "
+        "drives your decision. Do not claim certainty about the learner's true "
+        "ability — mastery values are heuristic signals.\n\n"
+        "Rules:\n"
+        "- Decide `\"no_change\"` if the evidence does not justify altering the "
+        "plan (a valid, valuable outcome), or `\"new_version\"` if it does.\n"
+        "- On `\"new_version\"`, propose ONLY the DELTA tasks to add (remediation "
+        "/ reordering) — not the whole plan. The system merges your delta onto "
+        "the current plan and a deterministic validator enforces schedule/"
+        "deadline/concept rules, so keep tasks realistic.\n"
+        "- Every delta task must name a `canonical_term` from the learner's "
+        "confirmed concepts. `day` is an ISO date (YYYY-MM-DD) on or after today.\n"
+        f"- Write `reasoning_text` in {_lang_name(lang)} — concise and honest, so "
+        "a student reading \"why did my plan change?\" understands it. Keep "
+        "canonical terms verbatim inside that text.\n"
+        "- Output ONLY a JSON object, no prose, no markdown fences, matching:\n"
+        "  {\"decision\": \"new_version\"|\"no_change\", \"reasoning_text\": str, "
+        "\"plan\": {\"tasks\": [{\"canonical_term\": str, \"day\": \"YYYY-MM-DD\", "
+        "\"description\": str, \"est_minutes\": int}]} | null}\n"
+        "  On \"no_change\", set \"plan\" to null."
+    )
+
+
+def _decide_replan_user_prompt(
+    learner_state: dict[str, Any],
+    progress: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    current_plan: dict[str, Any],
+) -> str:
+    import json
+
+    concepts = learner_state.get("concepts", [])
+    concept_lines = "\n".join(
+        f"- {c.get('canonical_term')}: mastery="
+        f"{c.get('mastery', 'unknown')}, confirmed={c.get('confirmed')}"
+        for c in concepts
+    ) or "(no concepts on record)"
+
+    current_tasks = current_plan.get("tasks", [])
+    plan_lines = "\n".join(
+        f"- {t.get('canonical_term') or ('concept_id=' + str(t.get('concept_id')))}"
+        f" on {t.get('day')}: {t.get('description', '')} [{t.get('status', 'pending')}]"
+        for t in current_tasks
+    ) or "(current plan has no tasks)"
+
+    return (
+        f"Today's date is {date.today().isoformat()}. Any delta task's `day` must "
+        "be on or after today's date and use the correct current year — do not "
+        "date tasks in a past year.\n"
+        f"Goal: {learner_state.get('goal_text')}\n"
+        f"Deadline: {learner_state.get('deadline')} "
+        f"({learner_state.get('days_remaining')} days remaining)\n"
+        f"Weekly hours available: {learner_state.get('weekly_hours')}\n\n"
+        f"Concept mastery signals:\n{concept_lines}\n\n"
+        f"Progress summary:\n{json.dumps(progress, ensure_ascii=False)}\n\n"
+        f"Current plan (version {current_plan.get('version_no')}):\n{plan_lines}\n\n"
+        f"Evidence since the last plan ({len(evidence)} events):\n"
+        f"{json.dumps(evidence, ensure_ascii=False)}\n\n"
+        "Decide whether to replan. If yes, propose the delta tasks."
+    )
+
+
+def _parse_decide_replan_response(raw: str) -> dict[str, Any]:
+    """Parse + validate a model response into the exact `_mock_decide_replan`
+    shape: {"decision", "reasoning_text", "plan": {...}|None}.
+
+    Structural sanity only — the orchestrator resolves canonical_term ->
+    concept_id, dedupes the delta, and the validator enforces the 5 plan rules.
+    A decision the model can't express cleanly is rejected with ValueError so
+    the retry loop can re-ask; a bad-but-parseable decision degrades to
+    no_change rather than corrupting the plan."""
+    data = _loads_json_loose(raw)
+    if not isinstance(data, dict):
+        raise ValueError("decide_replan response is not a JSON object")
+
+    decision = (data.get("decision") or "").strip()
+    reasoning = (data.get("reasoning_text") or "").strip()
+    if decision not in ("new_version", "no_change"):
+        raise ValueError(f"decide_replan: invalid decision {decision!r}")
+    if not reasoning:
+        raise ValueError("decide_replan: missing reasoning_text")
+
+    if decision == "no_change":
+        return {"decision": "no_change", "reasoning_text": reasoning, "plan": None}
+
+    raw_plan = data.get("plan") or {}
+    raw_tasks = raw_plan.get("tasks") if isinstance(raw_plan, dict) else None
+    if not isinstance(raw_tasks, list) or not raw_tasks:
+        # new_version with no usable delta -> honestly a no_change (the
+        # orchestrator would dedupe it to nothing anyway).
+        return {"decision": "no_change", "reasoning_text": reasoning, "plan": None}
+
+    tasks: list[dict[str, Any]] = []
+    for item in raw_tasks:
+        term = (item.get("canonical_term") or "").strip()
+        description = (item.get("description") or "").strip()
+        if not term or not description:
+            continue  # a delta task the orchestrator can't ground is useless
+        try:
+            est_minutes = int(item.get("est_minutes") or 0)
+        except (TypeError, ValueError):
+            est_minutes = 0
+        tasks.append({
+            "concept_id": None,  # orchestrator resolves canonical_term -> concept_id
+            "canonical_term": term,
+            "day": (item.get("day") or "")[:10],
+            "description": description,
+            "est_minutes": max(est_minutes, 0),
+        })
+    if not tasks:
+        return {"decision": "no_change", "reasoning_text": reasoning, "plan": None}
+    return {"decision": "new_version", "reasoning_text": reasoning, "plan": {"tasks": tasks}}
 
 
 #
@@ -314,15 +566,16 @@ def _parse_concepts_response(raw: str) -> list[dict[str, Any]]:
     return out
 
 
-def _real_extract_concepts(material_text: str, lang: str) -> list[dict[str, Any]]:  # pragma: no cover
+def _real_extract_concepts(material_text: str, lang: str) -> list[dict[str, Any]]:
     system_prompt = _extract_concepts_system_prompt(lang)
     user_prompt = _extract_concepts_user_prompt(material_text)
-    # >>> WIRE HERE: raw = hermes_client.complete(system=system_prompt, user=user_prompt, json_mode=True)
-    # >>> then:      return _parse_concepts_response(raw)
-    raise NotImplementedError(
-        "Prompt drafted in _extract_concepts_system_prompt/_extract_concepts_user_prompt; "
-        "parser ready in _parse_concepts_response. Wire the Hermes call here; "
-        "set MOCK_LLM=False only once it is live."
+    # Mechanical generation -> cheap/fast model (MODEL_GENERATION).
+    return _complete_and_parse(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        parse=_parse_concepts_response,
+        model=MODEL_GENERATION,
+        what="extract_concepts",
     )
 
 
@@ -392,16 +645,17 @@ def _parse_diagnostic_response(raw: str, valid_concept_ids: set[int], n: int) ->
     return out
 
 
-def _real_generate_diagnostic(concepts, n, lang):  # pragma: no cover
+def _real_generate_diagnostic(concepts, n, lang):
     system_prompt = _diagnostic_system_prompt(lang, n)
     user_prompt = _diagnostic_user_prompt(concepts, n)
     valid_ids = {c.get("id") for c in concepts}
-    # >>> WIRE HERE: raw = hermes_client.complete(system=system_prompt, user=user_prompt, json_mode=True)
-    # >>> then:      return _parse_diagnostic_response(raw, valid_ids, n)
-    raise NotImplementedError(
-        "Prompt drafted in _diagnostic_system_prompt/_diagnostic_user_prompt; "
-        "parser ready in _parse_diagnostic_response. Wire the Hermes call here; "
-        "set MOCK_LLM=False only once it is live."
+    # Mechanical generation -> cheap/fast model (MODEL_GENERATION).
+    return _complete_and_parse(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        parse=lambda raw: _parse_diagnostic_response(raw, valid_ids, n),
+        model=MODEL_GENERATION,
+        what="generate_diagnostic",
     )
 
 
@@ -442,6 +696,9 @@ def _plan_user_prompt(
         for c in ordered
     )
     return (
+        f"Today's date is {date.today().isoformat()}. Every task's `day` must be "
+        "on or after today's date and use the correct current year — do not date "
+        "tasks in a past year.\n"
         f"Deadline: {goal.get('deadline')}\n"
         f"Weekly hours available: {goal.get('weekly_hours')}\n\n"
         f"Concepts:\n{listing}\n\n"
@@ -478,18 +735,17 @@ def _parse_plan_response(raw: str, valid_concept_ids: set[int]) -> dict[str, Any
     return {"tasks": tasks}
 
 
-def _real_generate_plan(goal, concepts, scores, lang):  # pragma: no cover
+def _real_generate_plan(goal, concepts, scores, lang):
     system_prompt = _plan_system_prompt(lang)
     user_prompt = _plan_user_prompt(goal, concepts, scores)
     valid_ids = {c.get("id") for c in concepts}
-    # >>> WIRE HERE: raw = hermes_client.complete(system=system_prompt, user=user_prompt, json_mode=True)
-    # >>> then:      return _parse_plan_response(raw, valid_ids)
-    raise NotImplementedError(
-        "Prompt drafted in _plan_system_prompt/_plan_user_prompt; parser ready "
-        "in _parse_plan_response. Wire the Hermes call here (note: the "
-        "orchestrator/validator, not this function, enforces the 5 plan "
-        "rules — this parser only guards structural sanity); set MOCK_LLM=False "
-        "only once it is live."
+    # Plan generation is balanced work -> MODEL_PLAN (default sonnet tier).
+    return _complete_and_parse(
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        parse=lambda raw: _parse_plan_response(raw, valid_ids),
+        model=MODEL_PLAN,
+        what="generate_plan",
     )
 
 
@@ -497,7 +753,15 @@ def _real_generate_plan(goal, concepts, scores, lang):  # pragma: no cover
 # shared parsing helper
 # ---------------------------------------------------------------------------
 def _loads_json_loose(raw: str) -> dict[str, Any]:
-    """Strip markdown code fences a model might add, then json.loads."""
+    """Strip markdown code fences a model might add, then json.loads.
+
+    Defensive fallback: if the strict parse fails (e.g. the model prepended a
+    sentence of prose before the JSON, or appended a trailing note), retry on
+    the outermost brace-balanced ``{...}`` substring. This only runs after the
+    strict parse has already raised, so a well-formed response is never altered
+    — it just recovers the intermittent slop that would otherwise 502 the whole
+    call after the retry budget is spent.
+    """
     import json
 
     text = raw.strip()
@@ -505,4 +769,44 @@ def _loads_json_loose(raw: str) -> dict[str, Any]:
         text = text.strip("`")
         if text.lower().startswith("json"):
             text = text[4:]
-    return json.loads(text.strip())
+    text = text.strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        obj = _extract_json_object(text)
+        if obj is None:
+            raise
+        return json.loads(obj)
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Return the first brace-balanced ``{...}`` object in ``text``, or None.
+
+    Brace counting is string-literal aware so a ``{`` or ``}`` inside a quoted
+    value doesn't throw off the balance.
+    """
+    start = text.find("{")
+    if start == -1:
+        return None
+    depth = 0
+    in_str = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None

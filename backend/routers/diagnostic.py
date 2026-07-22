@@ -14,6 +14,7 @@ from sqlmodel import Session, select
 
 import models
 from agent import llm_client
+from agent.llm_client import LLMUnavailableError
 from config import DIAGNOSTIC_NUM_QUESTIONS
 from db import get_session
 from schemas import (
@@ -39,11 +40,16 @@ def generate_diagnostic(goal_id: int, session: Session = Depends(get_session)) -
         raise HTTPException(400, "confirm a concept map first")
 
     concept_dicts = [{"id": c.id, "canonical_term": c.canonical_term} for c in concepts]
-    questions = llm_client.generate_diagnostic(
-        concepts=concept_dicts,
-        num_questions=DIAGNOSTIC_NUM_QUESTIONS,
-        explanation_language=goal.explanation_language,
-    )
+    try:
+        questions = llm_client.generate_diagnostic(
+            concepts=concept_dicts,
+            num_questions=DIAGNOSTIC_NUM_QUESTIONS,
+            explanation_language=goal.explanation_language,
+        )
+    except LLMUnavailableError as exc:
+        # A3: live model unavailable -> clean, retryable error (never a 500).
+        raise HTTPException(502, {"error": "diagnostic generation unavailable, please retry",
+                                  "detail": str(exc)}) from exc
 
     diag = models.Diagnostic(goal_id=goal_id, questions_json=json.dumps(questions, ensure_ascii=False))
     session.add(diag)
@@ -77,10 +83,21 @@ def submit_diagnostic(goal_id: int, body: DiagnosticSubmit,
     answers = {a.question_id: a.choice for a in body.answers}
 
     # Tally correct/total per concept.
+    #
+    # The stored answer key is an option LETTER ("A".."D"); the client submits
+    # the option TEXT it selected (frontend binds the radio :value to the option
+    # string). So resolve the letter to its option text before comparing. We
+    # also accept a submitted letter directly, which keeps the degenerate mock
+    # case (options == ["A","B","C","D"]) and any letter-submitting client green.
     per_concept: dict[int, list[int]] = {}
     for qid, q in questions.items():
         cid = q["concept_id"]
-        correct = 1 if answers.get(qid) == q.get("answer") else 0
+        submitted = answers.get(qid)
+        letter = (q.get("answer") or "").strip().upper()
+        options = q.get("options") or []
+        idx = ord(letter) - ord("A") if len(letter) == 1 and "A" <= letter <= "Z" else -1
+        correct_text = options[idx] if 0 <= idx < len(options) else None
+        correct = 1 if submitted is not None and submitted in (correct_text, letter) else 0
         bucket = per_concept.setdefault(cid, [0, 0])
         bucket[0] += correct
         bucket[1] += 1

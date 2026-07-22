@@ -7,6 +7,7 @@ No migrations, no ORM ceremony — a single local SQLite file (Decision: no prod
 from __future__ import annotations
 
 from collections.abc import Generator
+from contextlib import contextmanager
 
 from sqlmodel import Session, SQLModel, create_engine
 
@@ -32,3 +33,19 @@ def get_session() -> Generator[Session, None, None]:
     """FastAPI dependency: yields a session, closes it after the request."""
     with Session(engine) as session:
         yield session
+
+
+@contextmanager
+def session_scope() -> Generator[Session, None, None]:
+    """A standalone session for code OUTSIDE a request (e.g. a FastAPI
+    BackgroundTask, whose work runs after the request's session is closed).
+    Commits on clean exit, rolls back on error, always closes."""
+    session = Session(engine)
+    try:
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()

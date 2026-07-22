@@ -25,8 +25,12 @@ from sqlmodel import Session, select
 
 import models
 from agent import llm_client, planmerge, tools
+from agent.llm_client import LLMUnavailableError
 from agent.validator import validate_plan
 from config import LLM_MAX_RETRIES, TRIGGERS
+from logging_config import get_logger
+
+_log = get_logger("agent")
 
 
 def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, Any]:
@@ -34,6 +38,7 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
     Execute one agent invocation. Returns a summary dict incl. the decision_id.
     Assumes the deterministic trigger already decided this should run.
     """
+    _log.info("agent run start (goal_id=%s, trigger=%s)", goal_id, trigger_reason)
     trace: list[dict[str, Any]] = []
 
     # --- read tools, fixed order -------------------------------------------
@@ -54,13 +59,33 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
     evidence_snapshot = {"progress": progress, "evidence_count": len(evidence)}
 
     # --- LLM decision point -------------------------------------------------
-    decision = llm_client.decide_replan(
-        learner_state=learner_state,
-        progress=progress,
-        evidence=evidence,
-        current_plan=current_plan,
-        explanation_language=lang,
-    )
+    # A3: if the live model is unavailable (transport failure or unparseable
+    # after bounded retries), we must NEVER crash a replan. Fall back to a
+    # recorded no_change so the plan is never corrupted by a bad/absent
+    # response, and the decision row still documents that we considered it.
+    try:
+        decision = llm_client.decide_replan(
+            learner_state=learner_state,
+            progress=progress,
+            evidence=evidence,
+            current_plan=current_plan,
+            explanation_language=lang,
+        )
+    except LLMUnavailableError as exc:
+        trace.append({
+            "tool": "llm.decide_replan",
+            "args": {"explanation_language": lang, "evidence_count": len(evidence)},
+            "result_summary": f"unavailable: {exc}",
+        })
+        rec = tools.record_agent_decision(
+            session, goal_id, trigger_reason, evidence_snapshot,
+            _model_unavailable_reasoning(lang),
+            trace, "no_change", None,
+        )
+        _log.warning("agent run -> no_change (goal_id=%s, reason=llm_unavailable, decision_id=%s)",
+                     goal_id, rec["decision_id"])
+        return {"decision": "no_change", "decision_id": rec["decision_id"],
+                "note": "llm_unavailable"}
     trace.append({
         "tool": "llm.decide_replan",
         "args": {"explanation_language": lang, "evidence_count": len(evidence)},
@@ -76,6 +101,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
             reasoning or "No change needed based on current evidence.",
             trace, "no_change", None,
         )
+        _log.info("agent run -> no_change (goal_id=%s, model decided no change, decision_id=%s)",
+                  goal_id, rec["decision_id"])
         return {"decision": "no_change", "decision_id": rec["decision_id"]}
 
     # --- resolve canonical_term -> concept_id ------------------------------
@@ -100,12 +127,29 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
             reasoning or "No change: the current plan already covers this remediation.",
             trace, "no_change", None,
         )
+        _log.info("agent run -> no_change (goal_id=%s, reason=delta_already_present, decision_id=%s)",
+                  goal_id, rec["decision_id"])
         return {"decision": "no_change", "decision_id": rec["decision_id"],
                 "note": "delta_already_present"}
 
     # --- validate (bounded) ------------------------------------------------
     valid_ids = _confirmed_concept_ids(session, goal_id)
     weak_ids = _weak_concept_ids(learner_state)
+    # Full-merge model: create_plan_version carries EVERY parent task forward and
+    # appends this delta (planmerge.merge_tasks). We validate only the delta for
+    # the per-task rules (schedule/budget) because carried-forward tasks are
+    # immutable, already-validated history. But Rule 5b (weak-concept coverage)
+    # is a GLOBAL property of the persisted plan: a weak concept already covered
+    # by a carried-forward parent task is NOT dropped, even though it's absent
+    # from the delta. So only require the delta to cover weak concepts the parent
+    # plan does not already cover — otherwise a valid remediation-only delta is
+    # falsely rejected for "dropping" concepts it never touched. (Parent tasks are
+    # never dropped in full-merge, so parent-covered weak concepts are always safe.)
+    parent_covered = {
+        t.get("concept_id") for t in current_plan.get("tasks", [])
+        if t.get("concept_id") is not None
+    }
+    weak_ids = weak_ids - parent_covered
     today = date.today().isoformat()
     deadline = learner_state.get("deadline", today)
     weekly_hours = learner_state.get("weekly_hours", 0.0)
@@ -145,6 +189,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
                 reasoning + f"  [Proposed plan rejected by validator: {vres.errors}]",
                 trace, "no_change", None,
             )
+            _log.warning("agent run -> no_change (goal_id=%s, reason=validation_failed, errors=%s, decision_id=%s)",
+                         goal_id, vres.errors, rec["decision_id"])
             return {"decision": "no_change", "decision_id": rec["decision_id"],
                     "note": "validation_failed"}
 
@@ -153,6 +199,8 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
         session, goal_id, trigger_reason, evidence_snapshot,
         reasoning, trace, "new_version", result_version_id,
     )
+    _log.info("agent run -> new_version (goal_id=%s, plan_version_id=%s, decision_id=%s)",
+              goal_id, result_version_id, rec["decision_id"])
     return {"decision": "new_version", "decision_id": rec["decision_id"],
             "plan_version_id": result_version_id}
 
@@ -160,6 +208,21 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def _model_unavailable_reasoning(lang: str) -> str:
+    """Localized reasoning_text for a no_change forced by an unavailable model
+    (A3). Honest about why nothing changed, so the decision row still reads well."""
+    if lang == "zh":
+        return (
+            "规划助手暂时不可用，本次未能生成新的计划建议。"
+            "为避免损坏当前计划，本次保持不变；稍后可再次尝试重新规划。"
+        )
+    return (
+        "The planning assistant was temporarily unavailable, so no new plan was "
+        "generated this time. To avoid corrupting the current plan it was left "
+        "unchanged; you can trigger a replan again later."
+    )
+
+
 def _traced(trace: list[dict[str, Any]], name: str, args: dict, result: Any) -> Any:
     """Append a read-tool call to the trace and return its result unchanged."""
     if isinstance(result, list):

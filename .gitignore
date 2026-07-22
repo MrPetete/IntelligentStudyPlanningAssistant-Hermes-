@@ -9,6 +9,7 @@ venv/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Database
 *.db
@@ -25,3 +26,5 @@ dist/
 
 # Logs
 *.log
+logs/
+*.log.[0-9]*
