@@ -19,9 +19,30 @@ from config import (
     LLM_MAX_RETRIES,
     MOCK_LLM,
     MODEL_GENERATION,
+    MODEL_LADDER,
     MODEL_PLAN,
     MODEL_REPLAN,
 )
+from logging_config import get_logger
+
+_log = get_logger("llm")
+
+
+def _ladder_from(model: str | None) -> list[tuple[str, int]]:
+    """Return the escalation ladder starting at ``model``'s tier.
+
+    If ``model`` is a known tier in MODEL_LADDER, return that tier and every
+    stronger tier after it (so a call starting at Sonnet can escalate to Opus,
+    but never back down to Haiku). If ``model`` is None or a custom id not in
+    the ladder, fall back to a single-tier "ladder" with the legacy
+    LLM_MAX_RETRIES budget — preserving the original behavior (and the
+    failure-handling tests) for any call that doesn't opt into tiered routing.
+    """
+    if model is not None:
+        for i, (tier_model, _attempts) in enumerate(MODEL_LADDER):
+            if tier_model == model:
+                return MODEL_LADDER[i:]
+    return [(model, LLM_MAX_RETRIES + 1)]
 
 
 class LLMUnavailableError(RuntimeError):
@@ -228,30 +249,60 @@ def _complete_and_parse(
     model: str | None = None,
     what: str,
 ) -> Any:
-    """Call the live model and parse its response, with bounded retries.
+    """Call the live model and parse its response, walking the escalation ladder.
 
-    Retries on BOTH transport failure (`HermesError`) and a structurally
-    broken response (the parser's `ValueError`) — a live model occasionally
-    returns prose or truncated JSON, and a fresh attempt usually fixes it.
-    Retries are capped at `LLM_MAX_RETRIES` (config, default 2). On final
-    failure raises `LLMUnavailableError` for the caller to handle.
+    Starts at ``model``'s tier and tries it up to that tier's attempt budget.
+    Retries on BOTH transport failure (`HermesError`) and a structurally broken
+    response (the parser's `ValueError`) — a live model occasionally returns
+    prose or truncated JSON. If a tier is exhausted, ESCALATE to the next
+    stronger tier (haiku -> sonnet -> opus) for this one call, logging the
+    escalation. The top tier is terminal: if it still fails, raise an
+    explanatory `LLMUnavailableError` rather than looping forever. A call whose
+    ``model`` isn't a ladder tier (or is None) keeps the legacy single-tier
+    behavior with the `LLM_MAX_RETRIES` budget.
 
     Imported here (not at module top) so mock-mode never imports httpx and
     tests that monkeypatch `hermes_client.complete` patch the same object we call.
     """
     from agent.hermes_client import HermesError, complete
 
+    # Operational logging only: task name, model id, attempt, duration, outcome.
+    # We NEVER log system_prompt / user_prompt / raw response — those carry the
+    # user's goal text, document content, and the model's reasoning.
+    ladder = _ladder_from(model)
     last_error: Exception | None = None
-    for attempt in range(LLM_MAX_RETRIES + 1):
-        try:
-            raw = complete(system=system_prompt, user=user_prompt, json_mode=True, model=model)
-            return parse(raw)
-        except (HermesError, ValueError) as exc:
-            last_error = exc
-            if attempt < LLM_MAX_RETRIES:
-                time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+    for tier_index, (tier_model, tier_attempts) in enumerate(ladder):
+        is_top_tier = tier_index == len(ladder) - 1
+        for attempt in range(tier_attempts):
+            start = time.perf_counter()
+            try:
+                raw = complete(system=system_prompt, user=user_prompt,
+                               json_mode=True, model=tier_model)
+                result = parse(raw)
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                _log.info("%s ok (model=%s, tier=%d/%d, attempt=%d/%d, %.0fms)",
+                          what, tier_model or "default", tier_index + 1, len(ladder),
+                          attempt + 1, tier_attempts, elapsed_ms)
+                return result
+            except (HermesError, ValueError) as exc:
+                last_error = exc
+                elapsed_ms = (time.perf_counter() - start) * 1000
+                _log.warning("%s attempt %d/%d failed (model=%s, tier=%d/%d, %.0fms): %s: %s",
+                             what, attempt + 1, tier_attempts, tier_model or "default",
+                             tier_index + 1, len(ladder), elapsed_ms,
+                             type(exc).__name__, exc)
+                if attempt < tier_attempts - 1:
+                    time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
+        # Tier exhausted. Escalate to the next tier if there is one.
+        if not is_top_tier:
+            next_model = ladder[tier_index + 1][0]
+            _log.warning("%s escalating %s -> %s after %d failed attempts",
+                         what, tier_model or "default", next_model, tier_attempts)
+    _log.error("%s UNAVAILABLE after exhausting the model ladder (last model=%s): %s",
+               what, ladder[-1][0] or "default", last_error)
     raise LLMUnavailableError(
-        f"{what} failed after {LLM_MAX_RETRIES + 1} attempts: {last_error}"
+        f"{what} failed after exhausting the model ladder "
+        f"({' -> '.join(str(m) for m, _ in ladder)}); last error: {last_error}"
     ) from last_error
 
 
