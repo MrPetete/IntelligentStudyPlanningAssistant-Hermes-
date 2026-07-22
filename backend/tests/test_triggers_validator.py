@@ -102,7 +102,7 @@ def _valid_task(concept_id=1, day="2026-08-01", minutes=60):
 def test_validator_accepts_a_reasonable_plan():
     plan = {"tasks": [_valid_task(day="2026-08-01"), _valid_task(day="2026-08-03")]}
     result = validate_plan(
-        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        plan=plan, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
         valid_concept_ids={1}, weak_concept_ids=set(),
     )
     assert result.ok is True
@@ -111,7 +111,7 @@ def test_validator_accepts_a_reasonable_plan():
 
 def test_validator_rejects_zero_tasks():
     result = validate_plan(
-        plan={"tasks": []}, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        plan={"tasks": []}, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
         valid_concept_ids={1},
     )
     assert result.ok is False
@@ -119,10 +119,10 @@ def test_validator_rejects_zero_tasks():
 
 
 def test_validator_rejects_overloaded_week():
-    # 10 tasks * 600 min each, single week window -> way over weekly_hours
+    # 10 tasks * 600 min = 6000 min, ~7-day window at 6h/day -> over the budget
     plan = {"tasks": [_valid_task(day="2026-07-26", minutes=600) for _ in range(10)]}
     result = validate_plan(
-        plan=plan, weekly_hours=6, deadline="2026-08-01", today="2026-07-25",
+        plan=plan, hours_per_day=6, deadline="2026-08-01", today="2026-07-25",
         valid_concept_ids={1},
     )
     assert result.ok is False
@@ -132,7 +132,7 @@ def test_validator_rejects_overloaded_week():
 def test_validator_rejects_task_after_deadline():
     plan = {"tasks": [_valid_task(day="2026-09-01")]}
     result = validate_plan(
-        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        plan=plan, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
         valid_concept_ids={1},
     )
     assert result.ok is False
@@ -142,7 +142,7 @@ def test_validator_rejects_task_after_deadline():
 def test_validator_rejects_task_in_the_past():
     plan = {"tasks": [_valid_task(day="2026-07-01")]}
     result = validate_plan(
-        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        plan=plan, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
         valid_concept_ids={1},
     )
     assert result.ok is False
@@ -152,7 +152,7 @@ def test_validator_rejects_task_in_the_past():
 def test_validator_rejects_unconfirmed_concept():
     plan = {"tasks": [_valid_task(concept_id=99, day="2026-08-01")]}
     result = validate_plan(
-        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        plan=plan, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
         valid_concept_ids={1},  # 99 is not in the confirmed set
     )
     assert result.ok is False
@@ -162,11 +162,43 @@ def test_validator_rejects_unconfirmed_concept():
 def test_validator_rejects_dropped_weak_concept_coverage():
     plan = {"tasks": [_valid_task(concept_id=1, day="2026-08-01")]}
     result = validate_plan(
-        plan=plan, weekly_hours=6, deadline="2026-08-10", today="2026-07-25",
+        plan=plan, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
         valid_concept_ids={1, 2}, weak_concept_ids={2},  # concept 2 is weak but never covered
     )
     assert result.ok is False
     assert any("drops all coverage" in e for e in result.errors)
+
+
+def test_validator_near_deadline_budget_is_day_accurate():
+    """A 3-day deadline yields a small day-accurate budget (no 1-week floor).
+
+    now is pinned to midnight so the first day counts full: 3 days x 2h/day =
+    6h = 360 raw min, x1.15 tolerance = 414. A plan summing 300 min fits; one
+    summing 600 min overshoots Rule 1. (This is the gap that let D-01 ship —
+    previously a 3-day deadline got a whole week's minutes.)"""
+    from datetime import datetime
+    fit = {"tasks": [_valid_task(day="2026-07-26", minutes=150),
+                     _valid_task(day="2026-07-27", minutes=150)]}
+    over = {"tasks": [_valid_task(day="2026-07-26", minutes=300),
+                      _valid_task(day="2026-07-27", minutes=300)]}
+    common = dict(hours_per_day=2, deadline="2026-07-28", today="2026-07-25",
+                  valid_concept_ids={1}, now=datetime(2026, 7, 25, 0, 0))
+    assert validate_plan(plan=fit, **common).ok is True
+    res_over = validate_plan(plan=over, **common)
+    assert res_over.ok is False
+    assert any("exceed available" in e for e in res_over.errors)
+
+
+def test_validator_trimmed_plan_passes():
+    """A plan covering only a subset of concepts, within budget, validates OK
+    (proves trimming to fit the budget doesn't trip any rule)."""
+    plan = {"tasks": [_valid_task(concept_id=1, day="2026-08-01", minutes=60)]}
+    result = validate_plan(
+        plan=plan, hours_per_day=6, deadline="2026-08-10", today="2026-07-25",
+        valid_concept_ids={1, 2, 3, 4, 5},  # 5 confirmed, only 1 covered -> trimmed
+        weak_concept_ids=set(),
+    )
+    assert result.ok is True, result.errors
 
 
 ALL_TESTS = [
@@ -183,6 +215,8 @@ ALL_TESTS = [
     test_validator_rejects_task_in_the_past,
     test_validator_rejects_unconfirmed_concept,
     test_validator_rejects_dropped_weak_concept_coverage,
+    test_validator_near_deadline_budget_is_day_accurate,
+    test_validator_trimmed_plan_passes,
 ]
 
 

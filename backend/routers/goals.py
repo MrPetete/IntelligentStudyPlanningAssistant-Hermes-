@@ -39,7 +39,7 @@ def create_goal(body: GoalCreate, session: Session = Depends(get_session)) -> Go
         user_id=SINGLE_USER_ID,
         goal_text=body.goal_text,
         deadline=body.deadline,
-        weekly_hours=body.weekly_hours,
+        hours_per_day=body.hours_per_day,
         explanation_language=body.explanation_language,
     )
     session.add(goal)
@@ -47,7 +47,7 @@ def create_goal(body: GoalCreate, session: Session = Depends(get_session)) -> Go
     session.refresh(goal)
     return GoalOut(
         id=goal.id, goal_text=goal.goal_text, deadline=goal.deadline,
-        weekly_hours=goal.weekly_hours, explanation_language=goal.explanation_language,
+        hours_per_day=goal.hours_per_day, explanation_language=goal.explanation_language,
         document_status="none", created_at=goal.created_at,
     )
 
@@ -62,7 +62,7 @@ def get_goal(goal_id: int, session: Session = Depends(get_session)) -> GoalOut:
     ).first()
     return GoalOut(
         id=goal.id, goal_text=goal.goal_text, deadline=goal.deadline,
-        weekly_hours=goal.weekly_hours, explanation_language=goal.explanation_language,
+        hours_per_day=goal.hours_per_day, explanation_language=goal.explanation_language,
         document_status=(doc.status if doc else "none"), created_at=goal.created_at,
     )
 
@@ -81,7 +81,7 @@ def set_language(goal_id: int, body: LanguageUpdate,
     session.refresh(goal)
     return GoalOut(
         id=goal.id, goal_text=goal.goal_text, deadline=goal.deadline,
-        weekly_hours=goal.weekly_hours, explanation_language=goal.explanation_language,
+        hours_per_day=goal.hours_per_day, explanation_language=goal.explanation_language,
         created_at=goal.created_at,
     )
 

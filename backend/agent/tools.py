@@ -44,7 +44,7 @@ def get_learner_state(session: Session, goal_id: int) -> dict[str, Any]:
     return {
         "goal_text": goal.goal_text,
         "deadline": goal.deadline,
-        "weekly_hours": goal.weekly_hours,
+        "hours_per_day": goal.hours_per_day,
         "explanation_language": goal.explanation_language,
         "concepts": [
             {

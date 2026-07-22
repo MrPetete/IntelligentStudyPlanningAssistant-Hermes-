@@ -111,11 +111,24 @@ def generate_plan(
     concepts: list[dict[str, Any]],
     scores: dict[int, float],
     explanation_language: str,
+    available_minutes: int | None = None,
+    num_days: float | None = None,
+    revise_errors: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Roadmap V1 generation. MOCK returns a small valid seeded plan."""
+    """Roadmap V1 generation. MOCK returns a small valid seeded plan.
+
+    ``available_minutes`` / ``num_days`` carry the router's day-accurate budget
+    into the prompt so the model can trim to fit (A-FIX-1). ``revise_errors``
+    feeds a prior validation failure back so the model can correct it in the
+    router's bounded revise loop (A-FIX-3).
+    """
     if MOCK_LLM:
-        return _mock_plan(concepts, explanation_language)
-    return _real_generate_plan(goal, concepts, scores, explanation_language)
+        return _mock_plan(concepts, explanation_language, available_minutes)
+    return _real_generate_plan(
+        goal, concepts, scores, explanation_language,
+        available_minutes=available_minutes, num_days=num_days,
+        revise_errors=revise_errors,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -170,9 +183,17 @@ def _mock_diagnostic(concepts: list[dict[str, Any]], n: int, lang: str) -> list[
     return qs
 
 
-def _mock_plan(concepts: list[dict[str, Any]], lang: str) -> dict[str, Any]:
+def _mock_plan(
+    concepts: list[dict[str, Any]], lang: str, available_minutes: int | None = None
+) -> dict[str, Any]:
+    per_task = 45
     tasks = []
     for i, c in enumerate(concepts, start=1):
+        # Honest offline demo: when a budget is given, stop adding tasks once the
+        # running total would exceed it, so the mock trims exactly like the real
+        # model would (this is what exercises the coverage_note path in mock mode).
+        if available_minutes is not None and per_task * i > available_minutes:
+            break
         tasks.append(
             {
                 "concept_id": c.get("id", i),
@@ -182,9 +203,23 @@ def _mock_plan(concepts: list[dict[str, Any]], lang: str) -> dict[str, Any]:
                     f"Study {c['canonical_term']} and do 3 practice questions.",
                     f"学习 {c['canonical_term']} 并完成 3 道练习题。",
                 ),
-                "est_minutes": 45,
+                "est_minutes": per_task,
             }
         )
+    # Never return an empty plan from the mock while at least one concept exists
+    # and the budget allows a single task — keeps the offline demo non-degenerate.
+    if not tasks and concepts and (available_minutes is None or available_minutes >= per_task):
+        c = concepts[0]
+        tasks.append({
+            "concept_id": c.get("id", 1),
+            "day": date.today().isoformat(),
+            "description": _t(
+                lang,
+                f"Study {c['canonical_term']} and do 3 practice questions.",
+                f"学习 {c['canonical_term']} 并完成 3 道练习题。",
+            ),
+            "est_minutes": per_task,
+        })
     return {"tasks": tasks}
 
 
@@ -390,7 +425,7 @@ def _decide_replan_user_prompt(
         f"Goal: {learner_state.get('goal_text')}\n"
         f"Deadline: {learner_state.get('deadline')} "
         f"({learner_state.get('days_remaining')} days remaining)\n"
-        f"Weekly hours available: {learner_state.get('weekly_hours')}\n\n"
+        f"Hours available per day: {learner_state.get('hours_per_day')}\n\n"
         f"Concept mastery signals:\n{concept_lines}\n\n"
         f"Progress summary:\n{json.dumps(progress, ensure_ascii=False)}\n\n"
         f"Current plan (version {current_plan.get('version_no')}):\n{plan_lines}\n\n"
@@ -672,12 +707,14 @@ def _plan_system_prompt(lang: str) -> str:
         "were given — never invent one.\n"
         "- Every task's day must be an ISO date (YYYY-MM-DD) on or after "
         "today and on or before the deadline you were given.\n"
-        "- Total planned minutes across all tasks must fit inside the "
-        "learner's weekly_hours budget for the number of weeks until the "
-        "deadline (small overage tolerance exists, but do not rely on it).\n"
-        "- Every concept must be covered by at least one task, and concepts "
-        "with a LOW diagnostic score need more/earlier tasks than concepts "
-        "with a high score.\n"
+        "- The sum of est_minutes across ALL tasks must stay at or under the "
+        "total study-minute budget stated in the user message (a small overage "
+        "tolerance exists, but do not rely on it).\n"
+        "- Cover as many concepts as the budget allows, prioritising the most "
+        "foundational / prerequisite concepts and any with a LOW diagnostic "
+        "score. If the budget cannot fit every concept, it is CORRECT to cover "
+        "the core concepts well and leave the rest out — do NOT shrink tasks to "
+        "unrealistic lengths just to include everything.\n"
         f"- Write `description` in {_lang_name(lang)}. Keep canonical_term "
         "mentions verbatim, untranslated.\n"
         "- Output ONLY a JSON object, no prose, matching:\n"
@@ -687,7 +724,12 @@ def _plan_system_prompt(lang: str) -> str:
 
 
 def _plan_user_prompt(
-    goal: dict[str, Any], concepts: list[dict[str, Any]], scores: dict[int, float]
+    goal: dict[str, Any],
+    concepts: list[dict[str, Any]],
+    scores: dict[int, float],
+    available_minutes: int | None = None,
+    num_days: float | None = None,
+    revise_errors: list[str] | None = None,
 ) -> str:
     ordered = sorted(concepts, key=lambda c: c.get("order_index", 0))
     listing = "\n".join(
@@ -695,13 +737,35 @@ def _plan_user_prompt(
         f"(diagnostic score: {scores.get(c.get('id'), 'not yet taken')})"
         for c in ordered
     )
+    # State the real budget explicitly so the model never has to infer the
+    # week/day arithmetic itself (that inference was a root cause of D-01).
+    if available_minutes is not None:
+        span = f" ({num_days:.1f} days x {goal.get('hours_per_day')}h/day)" if num_days else ""
+        budget_line = (
+            f"You have about {available_minutes} total study minutes before the "
+            f"deadline{span}. The sum of all est_minutes across your tasks MUST "
+            f"stay at or under {available_minutes}. If everything cannot fit, "
+            "cover the most foundational concepts and leave the rest out.\n"
+        )
+    else:
+        budget_line = f"Hours available per day: {goal.get('hours_per_day')}\n"
+
+    revise_line = ""
+    if revise_errors:
+        revise_line = (
+            "\nYour previous plan was REJECTED for:\n"
+            + "\n".join(f"- {e}" for e in revise_errors)
+            + "\nProduce a corrected plan that fits the budget above.\n"
+        )
+
     return (
         f"Today's date is {date.today().isoformat()}. Every task's `day` must be "
         "on or after today's date and use the correct current year — do not date "
         "tasks in a past year.\n"
         f"Deadline: {goal.get('deadline')}\n"
-        f"Weekly hours available: {goal.get('weekly_hours')}\n\n"
-        f"Concepts:\n{listing}\n\n"
+        f"{budget_line}\n"
+        f"Concepts:\n{listing}\n"
+        f"{revise_line}\n"
         "Produce the roadmap now."
     )
 
@@ -735,9 +799,18 @@ def _parse_plan_response(raw: str, valid_concept_ids: set[int]) -> dict[str, Any
     return {"tasks": tasks}
 
 
-def _real_generate_plan(goal, concepts, scores, lang):
+def _real_generate_plan(
+    goal, concepts, scores, lang,
+    available_minutes: int | None = None,
+    num_days: float | None = None,
+    revise_errors: list[str] | None = None,
+):
     system_prompt = _plan_system_prompt(lang)
-    user_prompt = _plan_user_prompt(goal, concepts, scores)
+    user_prompt = _plan_user_prompt(
+        goal, concepts, scores,
+        available_minutes=available_minutes, num_days=num_days,
+        revise_errors=revise_errors,
+    )
     valid_ids = {c.get("id") for c in concepts}
     # Plan generation is balanced work -> MODEL_PLAN (default sonnet tier).
     return _complete_and_parse(

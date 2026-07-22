@@ -73,7 +73,7 @@ def _seed_goal(db):
     with Session(db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
         g = models.Goal(user_id=1, goal_text="pass my databases final",
-                        deadline="2026-08-10", weekly_hours=6.0,
+                        deadline="2026-08-10", hours_per_day=6.0,
                         explanation_language="en")
         s.add(g); s.commit(); s.refresh(g)
         return g.id

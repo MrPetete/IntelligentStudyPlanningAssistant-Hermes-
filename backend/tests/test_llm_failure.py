@@ -226,7 +226,7 @@ def test_replan_llm_unavailable_falls_back_to_recorded_no_change():
     _db = _fresh_db("a3fallback")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -274,7 +274,7 @@ def test_diagnostic_generation_unavailable_returns_502():
     _db = _fresh_db("a3_502")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit()
