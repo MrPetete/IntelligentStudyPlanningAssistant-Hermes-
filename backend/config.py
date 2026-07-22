@@ -44,6 +44,32 @@ LLM_TIMEOUT_SECONDS = int(os.getenv("LLM_TIMEOUT_SECONDS", "60"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2"))  # bounded retries for JSON / transport failures
 
 # ---------------------------------------------------------------------------
+# Model escalation ladder (cost-aware capability ladder)
+# ---------------------------------------------------------------------------
+# A call starts at its per-task model (the cheapest tier that should handle it)
+# and, ONLY if that tier fails to parse / transport-fails after its attempts,
+# escalates UP to the next tier for that one call. Because per-task routing is
+# independent, the next task automatically starts back at the cheapest tier —
+# so we never get "stuck" on an expensive model and blow the bill. Escalation
+# is triggered by OBJECTIVE failure (unparseable response / transport error),
+# not by the model's self-reported confidence (which isn't trustworthy).
+#
+# Ordered cheapest -> strongest, each with its own attempt budget (tunable via
+# env). The top tier is terminal: if it still fails, we stop and raise an
+# explanatory LLMUnavailableError instead of looping forever.
+#   Haiku  : 3 attempts (cheap; most calls succeed here)
+#   Sonnet : 2 attempts
+#   Opus   : 2 attempts (also absorbs a transient API error at the top)
+LADDER_ATTEMPTS_GENERATION = int(os.getenv("LADDER_ATTEMPTS_GENERATION", "3"))
+LADDER_ATTEMPTS_PLAN = int(os.getenv("LADDER_ATTEMPTS_PLAN", "2"))
+LADDER_ATTEMPTS_REPLAN = int(os.getenv("LADDER_ATTEMPTS_REPLAN", "2"))
+MODEL_LADDER = [
+    (MODEL_GENERATION, LADDER_ATTEMPTS_GENERATION),  # haiku tier
+    (MODEL_PLAN, LADDER_ATTEMPTS_PLAN),              # sonnet tier
+    (MODEL_REPLAN, LADDER_ATTEMPTS_REPLAN),          # opus tier
+]
+
+# ---------------------------------------------------------------------------
 # Language (Decision D19 — content-only bilingual, two languages, no UI i18n)
 # ---------------------------------------------------------------------------
 SUPPORTED_LANGUAGES = ["en", "zh"]   # FROZEN at two. Do not extend in the MVP.

@@ -118,6 +118,78 @@ def test_transient_failure_then_success_recovers():
 
 
 # ---------------------------------------------------------------------------
+# Model escalation ladder — start cheap, escalate on failure, top tier terminal.
+# ---------------------------------------------------------------------------
+def test_ladder_from_starts_at_tier_and_only_goes_up():
+    """A call starting at the Sonnet tier can escalate to Opus but never back
+    down to Haiku; an unknown/None model falls back to the legacy single tier."""
+    full = llm_client._ladder_from(config.MODEL_GENERATION)  # haiku
+    assert [m for m, _ in full] == [config.MODEL_GENERATION, config.MODEL_PLAN, config.MODEL_REPLAN]
+    from_sonnet = llm_client._ladder_from(config.MODEL_PLAN)
+    assert [m for m, _ in from_sonnet] == [config.MODEL_PLAN, config.MODEL_REPLAN]
+    # None / custom id -> legacy single-tier ladder with LLM_MAX_RETRIES budget.
+    legacy = llm_client._ladder_from(None)
+    assert len(legacy) == 1 and legacy[0][1] == config.LLM_MAX_RETRIES + 1
+
+
+def test_ladder_escalates_through_all_tiers_then_raises():
+    """Every tier fails -> LLMUnavailableError, and each tier was tried its full
+    budget in order (haiku x3, sonnet x2, opus x2 by default)."""
+    seen: list[str] = []
+
+    def _always_fail(**kwargs):
+        seen.append(kwargs.get("model"))
+        raise HermesError("simulated failure")
+
+    orig = hermes_client.complete
+    hermes_client.complete = _always_fail
+    try:
+        _assert_raises(
+            LLMUnavailableError,
+            llm_client._complete_and_parse,
+            system_prompt="s", user_prompt="u", parse=lambda raw: raw,
+            model=config.MODEL_GENERATION, what="extract_concepts",
+        )
+        expected = (
+            [config.MODEL_GENERATION] * config.LADDER_ATTEMPTS_GENERATION
+            + [config.MODEL_PLAN] * config.LADDER_ATTEMPTS_PLAN
+            + [config.MODEL_REPLAN] * config.LADDER_ATTEMPTS_REPLAN
+        )
+        assert seen == expected, f"escalation order wrong: {seen}"
+    finally:
+        hermes_client.complete = orig
+
+
+def test_ladder_escalates_and_succeeds_at_higher_tier():
+    """Haiku fails its whole budget, Sonnet succeeds on its first attempt ->
+    returns the parsed result and does NOT touch Opus."""
+    seen: list[str] = []
+    good = '{"concepts": [{"canonical_term": "Normalization", "name": "N", "explanation": "x", "order_index": 1}]}'
+
+    def _fail_haiku_then_ok(**kwargs):
+        model = kwargs.get("model")
+        seen.append(model)
+        if model == config.MODEL_GENERATION:
+            raise HermesError("haiku slop")
+        return good  # sonnet answers cleanly
+
+    orig = hermes_client.complete
+    hermes_client.complete = _fail_haiku_then_ok
+    try:
+        out = llm_client._complete_and_parse(
+            system_prompt="s", user_prompt="u",
+            parse=llm_client._parse_concepts_response,
+            model=config.MODEL_GENERATION, what="extract_concepts",
+        )
+        assert isinstance(out, list) and out[0]["canonical_term"] == "Normalization"
+        assert seen.count(config.MODEL_GENERATION) == config.LADDER_ATTEMPTS_GENERATION
+        assert seen.count(config.MODEL_PLAN) == 1, "should stop at first sonnet success"
+        assert config.MODEL_REPLAN not in seen, "must not reach opus once sonnet succeeds"
+    finally:
+        hermes_client.complete = orig
+
+
+# ---------------------------------------------------------------------------
 # Orchestrator fallback — a replan must NEVER crash or corrupt the plan.
 # ---------------------------------------------------------------------------
 def _db_available() -> bool:
@@ -228,6 +300,9 @@ ALL_TESTS = [
     test_transport_error_retries_to_cap_then_raises,
     test_malformed_json_retries_then_raises,
     test_transient_failure_then_success_recovers,
+    test_ladder_from_starts_at_tier_and_only_goes_up,
+    test_ladder_escalates_through_all_tiers_then_raises,
+    test_ladder_escalates_and_succeeds_at_higher_tier,
     test_replan_llm_unavailable_falls_back_to_recorded_no_change,
     test_diagnostic_generation_unavailable_returns_502,
 ]
