@@ -28,3 +28,6 @@ dist/
 *.log
 logs/
 *.log.[0-9]*
+
+# Local DB repro/backup artifacts
+*.db.*.bak

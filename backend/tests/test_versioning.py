@@ -23,6 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agent.planmerge import merge_tasks
 
 
+class _NoopBackground:
+    """Stand-in for FastAPI BackgroundTasks: records scheduled tasks but never
+    runs them (rc2 — complete_task now takes a `background` param for A-RC2-1)."""
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, fn, *args, **kwargs):
+        self.tasks.append((fn, args, kwargs))
+
+
 # ---------------------------------------------------------------------------
 # Tier 1 — PURE merge tests (the heart of A2). Always runnable.
 # ---------------------------------------------------------------------------
@@ -392,7 +402,7 @@ def test_db_complete_task_on_superseded_version_rejected():
 
         raised = False
         try:
-            complete_task(v1_task.id, session=s)
+            complete_task(v1_task.id, _NoopBackground(), session=s)
         except HTTPException as e:
             raised = True
             assert e.status_code == 409
@@ -421,7 +431,7 @@ def test_db_complete_task_sets_completed_at():
         ]}, created_by="user")
         task = s.exec(select(models.Task).where(
             models.Task.plan_version_id == v1["plan_version_id"])).first()
-        complete_task(task.id, session=s)
+        complete_task(task.id, _NoopBackground(), session=s)
         s.refresh(task)
         assert task.status == "done"
         assert task.completed_at, "completed_at must be stamped on completion"

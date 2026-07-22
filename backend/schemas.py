@@ -40,6 +40,17 @@ class LanguageUpdate(BaseModel):
     explanation_language: Language
 
 
+class GoalListItem(BaseModel):
+    """Lightweight row for the multi-goal switcher (GET /goals). A-RC2-6."""
+    id: int
+    goal_text: str
+    deadline: str
+    hours_per_day: float
+    explanation_language: Language
+    document_status: str = "none"
+    created_at: str
+
+
 # ===========================================================================
 # Documents (single document, placeholder processing)
 # ===========================================================================
@@ -108,6 +119,38 @@ class DiagnosticResult(BaseModel):
 
 
 # ===========================================================================
+# Checkpoint re-quiz (A-RC2-4) — mid-plan re-test scoped to specific concepts.
+# Reuses the diagnostic question/scoring shapes; writes quiz_result evidence per
+# concept so mastery can actually move and the trigger gate sees real re-test
+# signal (not just raw task completions).
+# ===========================================================================
+class CheckpointGenerate(BaseModel):
+    """Generate a checkpoint quiz scoped to a concept subset. Empty/omitted
+    concept_ids => all confirmed concepts (a full re-test). `day` is an optional
+    convenience for the frontend's end-of-day quiz (scopes to that day's tasks'
+    concepts when concept_ids is not given)."""
+    concept_ids: list[int] = Field(default_factory=list)
+    day: str | None = None
+    num_questions: int | None = None     # default: config.DIAGNOSTIC_NUM_QUESTIONS
+
+
+class CheckpointOut(BaseModel):
+    checkpoint_id: int                   # a Diagnostic row id (reused table)
+    concept_ids: list[int]               # the concepts this quiz actually covers
+    questions: list[DiagnosticQuestion]
+
+
+class CheckpointSubmit(BaseModel):
+    checkpoint_id: int                   # which checkpoint quiz these answers are for
+    answers: list[DiagnosticAnswer]
+
+
+class CheckpointResult(BaseModel):
+    per_concept_score: dict[int, float]  # {concept_id: 0..1}
+    trigger_fired: bool = False          # did the re-test signal queue a replan?
+
+
+# ===========================================================================
 # Plans / tasks / versions
 # ===========================================================================
 class TaskOut(BaseModel):
@@ -164,7 +207,15 @@ class EvidenceCreate(BaseModel):
 class TaskCompleteOut(BaseModel):
     task_id: int
     status: str
-    trigger_fired: bool                  # did completing this fire a replan trigger?
+    # A replan trigger fired and was QUEUED (background), not necessarily finished.
+    # The frontend polls GET /goals/{id}/decisions for the resulting new version.
+    trigger_fired: bool
+
+
+class TaskUncompleteOut(BaseModel):
+    task_id: int
+    status: str                          # 'pending' after a successful uncheck
+    evidence_removed: int = 0            # task_done evidence rows invalidated
 
 
 class SimulateRequest(BaseModel):

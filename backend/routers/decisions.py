@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlmodel import Session, select
 
 import models
@@ -35,17 +35,29 @@ def list_decisions(goal_id: int, session: Session = Depends(get_session)) -> lis
 
 @router.get("/{goal_id}/decisions/{decision_id}", response_model=AgentDecisionOut)
 def get_decision(goal_id: int, decision_id: int,
+                 include_trace: bool = Query(
+                     False,
+                     description="Include the raw tool-call trace. Default false: "
+                                 "the student view shows reasoning_text only; the "
+                                 "trace is the defence artifact, opt-in behind a "
+                                 "'details' toggle (A-RC2-5 / B-RC2-6)."),
                  session: Session = Depends(get_session)) -> AgentDecisionOut:
     d = session.get(models.AgentDecision, decision_id)
     if not d or d.goal_id != goal_id:
         raise HTTPException(404, "decision not found")
 
-    raw_trace = json.loads(d.tool_trace_json) if d.tool_trace_json else []
-    trace = [
-        ToolCall(tool=tc.get("tool", ""), args=tc.get("args", {}),
-                 result_summary=tc.get("result_summary", ""))
-        for tc in raw_trace
-    ]
+    # The raw tool trace clutters the student view (R2-08). It is NOT deleted —
+    # it stays in the DB as the defence artifact — but it is only serialized into
+    # the payload when explicitly requested (?include_trace=true), so the default
+    # student-facing read carries just the human reasoning.
+    trace: list[ToolCall] = []
+    if include_trace:
+        raw_trace = json.loads(d.tool_trace_json) if d.tool_trace_json else []
+        trace = [
+            ToolCall(tool=tc.get("tool", ""), args=tc.get("args", {}),
+                     result_summary=tc.get("result_summary", ""))
+            for tc in raw_trace
+        ]
     return AgentDecisionOut(
         id=d.id, trigger=d.trigger,
         evidence_snapshot=json.loads(d.evidence_snapshot_json) if d.evidence_snapshot_json else {},

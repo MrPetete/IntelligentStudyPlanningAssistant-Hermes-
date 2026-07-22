@@ -17,7 +17,13 @@ import storage
 from config import SINGLE_USER_ID, SUPPORTED_LANGUAGES
 from db import get_session, session_scope
 from logging_config import get_logger
-from schemas import DocumentStatusOut, GoalCreate, GoalOut, LanguageUpdate
+from schemas import (
+    DocumentStatusOut,
+    GoalCreate,
+    GoalListItem,
+    GoalOut,
+    LanguageUpdate,
+)
 
 _log = get_logger("ingestion")
 
@@ -52,6 +58,27 @@ def create_goal(body: GoalCreate, session: Session = Depends(get_session)) -> Go
     )
 
 
+@router.get("", response_model=list[GoalListItem])
+def list_goals(session: Session = Depends(get_session)) -> list[GoalListItem]:
+    """All goals for the multi-goal switcher (A-RC2-6). Everything is already
+    keyed by goal_id, so multi-goal is just this list endpoint + the frontend
+    keying every view off the selected id. `explanation_language` is returned so
+    the switcher can drive both content and UI locale (A-RC2-7: one field)."""
+    goals = session.exec(select(models.Goal).order_by(models.Goal.id)).all()
+    docs = {
+        d.goal_id: d.status
+        for d in session.exec(select(models.Document)).all()
+    }
+    return [
+        GoalListItem(
+            id=g.id, goal_text=g.goal_text, deadline=g.deadline,
+            hours_per_day=g.hours_per_day, explanation_language=g.explanation_language,
+            document_status=docs.get(g.id, "none"), created_at=g.created_at,
+        )
+        for g in goals
+    ]
+
+
 @router.get("/{goal_id}", response_model=GoalOut)
 def get_goal(goal_id: int, session: Session = Depends(get_session)) -> GoalOut:
     goal = session.get(models.Goal, goal_id)
@@ -79,10 +106,13 @@ def set_language(goal_id: int, body: LanguageUpdate,
     session.add(goal)
     session.commit()
     session.refresh(goal)
+    doc = session.exec(
+        select(models.Document).where(models.Document.goal_id == goal_id)
+    ).first()
     return GoalOut(
         id=goal.id, goal_text=goal.goal_text, deadline=goal.deadline,
         hours_per_day=goal.hours_per_day, explanation_language=goal.explanation_language,
-        created_at=goal.created_at,
+        document_status=(doc.status if doc else "none"), created_at=goal.created_at,
     )
 
 

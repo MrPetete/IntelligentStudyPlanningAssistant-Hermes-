@@ -2,50 +2,39 @@
 Evidence + simulation endpoints.
 
 Task completion and generic evidence are written by the APP (not the Agent).
-After writing evidence, deterministic triggers are evaluated; if one fires, the
-orchestrator runs the Agent. `/simulate` injects a canned failure pattern so a
-replan can be demonstrated on demand (examiners can't wait real days).
+After writing evidence, deterministic triggers are evaluated SYNCHRONOUSLY; if
+one fires (and no cooldown is active), the Agent run is SCHEDULED on a background
+task — never run inline, so a checkbox click no longer blocks 15-57s on the opus
+call (R2-02 / A-RC2-1). `trigger_fired` therefore means "a replan was QUEUED",
+and the frontend polls GET /goals/{id}/decisions for the result.
+`/simulate` injects a canned failure pattern so a replan can be demonstrated on
+demand (examiners can't wait real days).
 """
 from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from sqlmodel import Session, select
 
 import models
-from agent import orchestrator, tools
-from agent.triggers import evaluate_triggers
+from agent import tools
+from agent.replan import evaluate_and_schedule
 from db import get_session
 from schemas import (
     EvidenceCreate,
     SimulateOut,
     SimulateRequest,
     TaskCompleteOut,
+    TaskUncompleteOut,
 )
 
 router = APIRouter(tags=["evidence"])
 
 
-def _evaluate_and_maybe_run(session: Session, goal_id: int, explicit: bool = False):
-    """Shared: build trigger inputs, evaluate, and run the Agent if fired."""
-    progress = tools.get_progress_summary(session, goal_id)
-    learner = tools.get_learner_state(session, goal_id)
-    mastery = {c["concept_id"]: c["mastery"] for c in learner.get("concepts", [])}
-    recent = tools.get_evidence_since_last_plan(session, goal_id)
-
-    tr = evaluate_triggers(
-        progress=progress, concept_mastery=mastery,
-        recent_evidence=recent, explicit_request=explicit,
-    )
-    if not tr.fired:
-        return False, None
-    result = orchestrator.run_agent(session, goal_id, tr.reason)
-    return True, result.get("decision_id")
-
-
 @router.post("/tasks/{task_id}/complete", response_model=TaskCompleteOut)
-def complete_task(task_id: int, session: Session = Depends(get_session)) -> TaskCompleteOut:
+def complete_task(task_id: int, background: BackgroundTasks,
+                  session: Session = Depends(get_session)) -> TaskCompleteOut:
     task = session.get(models.Task, task_id)
     if not task:
         raise HTTPException(404, "task not found")
@@ -75,12 +64,67 @@ def complete_task(task_id: int, session: Session = Depends(get_session)) -> Task
     ))
     session.commit()
 
-    fired, _ = _evaluate_and_maybe_run(session, goal_id)
+    # Evaluate synchronously; schedule the agent in the background if it fired.
+    fired, _ = evaluate_and_schedule(session, goal_id, background)
     return TaskCompleteOut(task_id=task_id, status="done", trigger_fired=fired)
 
 
+@router.post("/tasks/{task_id}/uncomplete", response_model=TaskUncompleteOut)
+def uncomplete_task(task_id: int, session: Session = Depends(get_session)) -> TaskUncompleteOut:
+    """Revert a mistaken completion on the CURRENT plan version: flip done->pending
+    and invalidate the matching task_done evidence so mastery/triggers stop
+    counting it (B-RC2-1 uncheck). No replan is scheduled — undoing a misclick
+    should never itself trigger the agent.
+
+    Guarded like complete_task: only the current version's tasks are mutable
+    (append-only history, D11). A task that isn't `done` is returned unchanged so
+    the endpoint is idempotent for the frontend."""
+    task = session.get(models.Task, task_id)
+    if not task:
+        raise HTTPException(404, "task not found")
+
+    pv = session.get(models.PlanVersion, task.plan_version_id)
+    goal_id = pv.goal_id
+
+    latest = tools._latest_plan_version(session, goal_id)
+    if latest and task.plan_version_id != latest.id:
+        raise HTTPException(
+            409,
+            "cannot uncomplete a task on a superseded plan version; "
+            "act on the matching task on the current version",
+        )
+
+    if task.status != "done":
+        return TaskUncompleteOut(task_id=task_id, status=task.status, evidence_removed=0)
+
+    task.status = "pending"
+    task.completed_at = None
+    session.add(task)
+
+    # Invalidate the task_done evidence this completion wrote. Match by the
+    # task_id recorded in the payload so we only remove THIS task's rows, not
+    # another task on the same concept. (Evidence has no task FK by design —
+    # it's an append log keyed by goal/concept — so we filter in-Python.)
+    removed = 0
+    rows = session.exec(
+        select(models.Evidence)
+        .where(models.Evidence.goal_id == goal_id)
+        .where(models.Evidence.type == "task_done")
+    ).all()
+    for e in rows:
+        try:
+            payload = json.loads(e.payload_json) if e.payload_json else {}
+        except (json.JSONDecodeError, TypeError):
+            payload = {}
+        if payload.get("task_id") == task_id:
+            session.delete(e)
+            removed += 1
+    session.commit()
+    return TaskUncompleteOut(task_id=task_id, status="pending", evidence_removed=removed)
+
+
 @router.post("/goals/{goal_id}/evidence")
-def record_evidence(goal_id: int, body: EvidenceCreate,
+def record_evidence(goal_id: int, body: EvidenceCreate, background: BackgroundTasks,
                     session: Session = Depends(get_session)) -> dict:
     if not session.get(models.Goal, goal_id):
         raise HTTPException(404, "goal not found")
@@ -89,21 +133,25 @@ def record_evidence(goal_id: int, body: EvidenceCreate,
         payload_json=json.dumps(body.payload, ensure_ascii=False),
     ))
     session.commit()
-    fired, decision_id = _evaluate_and_maybe_run(session, goal_id)
+    fired, decision_id = evaluate_and_schedule(session, goal_id, background)
     return {"ok": True, "trigger_fired": fired, "decision_id": decision_id}
 
 
 @router.post("/goals/{goal_id}/replan")
-def explicit_replan(goal_id: int, session: Session = Depends(get_session)) -> dict:
-    """User-requested replan: always invokes the Agent (bypasses min-evidence guard)."""
+def explicit_replan(goal_id: int, background: BackgroundTasks,
+                    session: Session = Depends(get_session)) -> dict:
+    """User-requested replan: always fires (bypasses the min-evidence guard AND
+    the cooldown). DECIDED (lead): background + poll — return immediately with
+    "queued"; the frontend polls GET /goals/{id}/decisions and toasts when the
+    new version lands. Never hold the request open for the 15-57s opus call."""
     if not session.get(models.Goal, goal_id):
         raise HTTPException(404, "goal not found")
-    fired, decision_id = _evaluate_and_maybe_run(session, goal_id, explicit=True)
+    fired, decision_id = evaluate_and_schedule(session, goal_id, background, explicit=True)
     return {"ok": True, "trigger_fired": fired, "decision_id": decision_id}
 
 
 @router.post("/goals/{goal_id}/simulate", response_model=SimulateOut)
-def simulate(goal_id: int, body: SimulateRequest,
+def simulate(goal_id: int, body: SimulateRequest, background: BackgroundTasks,
              session: Session = Depends(get_session)) -> SimulateOut:
     """
     DEMO CONTROL. Inject a canned failure pattern, then evaluate triggers.
@@ -150,6 +198,10 @@ def simulate(goal_id: int, body: SimulateRequest,
             created += 1
     session.commit()
 
-    fired, decision_id = _evaluate_and_maybe_run(session, goal_id)
+    # Demo control still schedules in the background like the real path, so the
+    # examiner sees the same "queued -> poll -> new version" flow. decision_id is
+    # None on the async path (poll decisions); populated only on the direct
+    # no-background fallback.
+    fired, decision_id = evaluate_and_schedule(session, goal_id, background)
     return SimulateOut(scenario=body.scenario, evidence_created=created,
                        trigger_fired=fired, decision_id=decision_id)

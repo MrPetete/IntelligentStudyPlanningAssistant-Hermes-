@@ -84,6 +84,11 @@ TRIGGERS = {
     "low_mastery_threshold": 0.40, # concept mastery below this after evidence -> consider
     "quiz_fail_threshold": 0.50,   # quiz score below this on a concept -> consider
     "min_evidence_events": 3,      # never replan on a single data point
+    # Debounce: after an agent decision lands for a goal, non-explicit triggers
+    # are suppressed for this many seconds. Without it, a burst of quick task
+    # completions clears min_evidence_events instantly and replans fire on nearly
+    # every checkbox (R2-02). An explicit user "replan" always bypasses this.
+    "replan_cooldown_seconds": 300,
 }
 
 # ---------------------------------------------------------------------------
