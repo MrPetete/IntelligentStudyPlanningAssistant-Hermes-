@@ -31,3 +31,6 @@ logs/
 
 # Local DB repro/backup artifacts
 *.db.*.bak
+
+# Uploaded documents (runtime test data, not source)
+backend/uploads/

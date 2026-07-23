@@ -62,6 +62,14 @@ function nextConceptId(goalId) {
   const list = conceptsForGoal(goalId)
   return list.reduce((m, c) => Math.max(m, c.id || 0), 0) + 1
 }
+function findGoalForTask(taskId) {
+  for (const [gid, vm] of state.versions.entries()) {
+    for (const v of vm.values()) {
+      if (v.tasks.some((t) => t.id === taskId)) return gid
+    }
+  }
+  return null
+}
 function buildVersion(goalId, version_no, created_by, parent_version_id, tasks) {
   return {
     id: version_no,
@@ -249,34 +257,53 @@ function route(method, path, body) {
   const taskM = p.match(taskRe)
   if (m === 'POST' && taskM) {
     const taskId = Number(taskM[1])
-    // Find the goal that owns this task (tasks live under a goal's versions).
-    let goalId = null
-    for (const [gid, vm] of state.versions.entries()) {
-      for (const v of vm.values()) {
-        if (v.tasks.some((t) => t.id === taskId)) { goalId = gid; break }
-      }
-      if (goalId != null) break
-    }
+    const goalId = findGoalForTask(taskId)
     if (goalId == null) httpError(404, 'task not found')
     const vm = state.versions.get(goalId)
     let found = false
     vm.forEach((v) => {
-      v.tasks.forEach((t) => { if (t.id === taskId) { t.status = 'done'; found = true } })
+      v.tasks.forEach((t) => { if (t.id === taskId) { t.status = 'done'; t.completed_at = nowIso(); found = true } })
     })
     const res = state.diagnosticResults.get(goalId)
     const scores = res?.per_concept_score || {}
     const triggerFired = Object.values(scores).some((s) => s < 0.5)
-    // Option A: when the trigger fires, actually run a replan (like the real backend)
-    // so the toast is truthful and Version History shows a new version.
+    // Async-replan contract (A-RC2-1 / B-RC2-2): trigger_fired means QUEUED, not
+    // finished. Schedule the replan to land shortly after this call returns so
+    // the frontend's poll-on-decisions loop behaves like the real backend.
     const result = { task_id: taskId, status: found ? 'done' : 'pending', trigger_fired: triggerFired }
     if (triggerFired) {
-      // doReplan returns { scenario, evidence_created, trigger_fired, decision_id } directly
-      // (not wrapped in .data like handleMock responses).
       const g = state.goals.get(goalId)
-      const simDec = doReplan(goalId, 'low_mastery', g?.explanation_language || 'en')
-      result.decision_id = simDec.decision_id
+      scheduleReplan(goalId, 'low_mastery', g?.explanation_language || 'en')
     }
     return result
+  }
+
+  // POST /tasks/{task_id}/uncomplete  (B-RC2-1 uncheck — mirrors the real
+  // POST /tasks/{id}/uncomplete: flip done->pending, no replan scheduled)
+  const uncTaskRe = /^\/tasks\/(\d+)\/uncomplete$/
+  const uncTaskM = p.match(uncTaskRe)
+  if (m === 'POST' && uncTaskM) {
+    const taskId = Number(uncTaskM[1])
+    const goalId = findGoalForTask(taskId)
+    if (goalId == null) httpError(404, 'task not found')
+    const vm = state.versions.get(goalId)
+    let task = null
+    vm.forEach((v) => { v.tasks.forEach((t) => { if (t.id === taskId) task = t }) })
+    if (!task || task.status !== 'done') {
+      return { task_id: taskId, status: task?.status || 'pending', evidence_removed: 0 }
+    }
+    task.status = 'pending'
+    task.completed_at = null
+    return { task_id: taskId, status: 'pending', evidence_removed: 1 }
+  }
+
+  // GET /goals  (multi-goal switcher, B-RC2-7)
+  if (m === 'GET' && p === '/goals') {
+    return [...state.goals.values()].sort((a, b) => a.id - b.id).map((g) => ({
+      id: g.id, goal_text: g.goal_text, deadline: g.deadline,
+      hours_per_day: g.hours_per_day, explanation_language: g.explanation_language,
+      document_status: state.docStatus.get(g.id)?.status || 'none', created_at: g.created_at
+    }))
   }
 
   if (!goalMatch) return httpError(404, 'unknown endpoint ' + m + ' ' + p)
@@ -419,49 +446,104 @@ function route(method, path, body) {
     return ev
   }
 
-  // POST /goals/{id}/replan  (manual replan control)
+  // POST /goals/{id}/replan  (manual replan control — background + poll, same
+  // async contract as the real backend: decision_id is null on this response)
   if (m === 'POST' && p === `/goals/${goalId}/replan`) {
-    return doReplan(goalId, 'explicit_user_request', 'en')
+    scheduleReplan(goalId, 'explicit_user_request', g.explanation_language)
+    return { ok: true, trigger_fired: true, decision_id: null }
   }
 
   // POST /goals/{id}/simulate
   if (m === 'POST' && p === `/goals/${goalId}/simulate`) {
     const scenario = body.scenario || 'normalization_failure'
     if (scenario === 'missed_tasks') {
-      // 25% overdue trigger -> new version
+      // 25% overdue trigger -> new version, scheduled async like the real backend.
       const vm = state.versions.get(goalId)
       const last = [...vm.values()].sort((a, b) => a.version_no - b.version_no).pop()
-      const nextNo = last.version_no + 1
-      const newTasks = clone(last.tasks)
-      newTasks.push({
-        id: 900 + nextNo, concept_id: conceptsForGoal(goalId)[0]?.id || 1,
-        canonical_term: conceptsForGoal(goalId)[0]?.canonical_term || 'Catch-up',
-        day: new Date().toISOString().slice(0, 10),
-        description: 'Catch-up task added after missed deadline.', est_minutes: 30, status: 'pending'
-      })
-      const v = buildVersion(goalId, nextNo, 'agent', last.version_no, newTasks)
-      vm.set(nextNo, v)
-      state.currentVersion.set(goalId, nextNo)
-      const dec = {
-        id: (state.decisions.get(goalId).length || 0) + 1,
-        trigger: 'behind_schedule',
-        evidence_snapshot: { progress: { tasks_due: 8, tasks_incomplete: 6 }, evidence_count: 3 },
-        reasoning_text: '25% of tasks are overdue. Added a catch-up task to recover the schedule.',
-        tool_trace: [
-          { tool: 'get_learner_state', args: { goal_id: goalId }, result_summary: 'goal, deadline, hours_per_day' },
-          { tool: 'get_progress_summary', args: { goal_id: goalId }, result_summary: 'tasks_due=8, tasks_incomplete=6' },
-          { tool: 'get_evidence_since_last_plan', args: { goal_id: goalId }, result_summary: '3 items' },
-          { tool: 'llm.decide_replan', args: { explanation_language: g.explanation_language }, result_summary: 'decision=new_version' },
-          { tool: 'validator.validate_plan', args: { attempt: 0 }, result_summary: 'ok' },
-          { tool: 'create_plan_version', args: { task_count: newTasks.length }, result_summary: `version_no=${nextNo}` }
-        ],
-        decision: 'new_version', resulting_plan_version_id: v.id, created_at: nowIso()
-      }
-      state.decisions.get(goalId).push(dec)
-      return { scenario, evidence_created: 3, trigger_fired: true, decision_id: dec.id }
+      for (const t of last.tasks.slice(0, 3)) t.status = 'skipped'
+      setTimeout(() => {
+        try {
+          const vm2 = state.versions.get(goalId)
+          const last2 = [...vm2.values()].sort((a, b) => a.version_no - b.version_no).pop()
+          const nextNo = last2.version_no + 1
+          const newTasks = clone(last2.tasks)
+          newTasks.push({
+            id: 900 + nextNo, concept_id: conceptsForGoal(goalId)[0]?.id || 1,
+            canonical_term: conceptsForGoal(goalId)[0]?.canonical_term || 'Catch-up',
+            day: new Date().toISOString().slice(0, 10),
+            description: 'Catch-up task added after missed deadline.', est_minutes: 30, status: 'pending'
+          })
+          const v = buildVersion(goalId, nextNo, 'agent', last2.version_no, newTasks)
+          vm2.set(nextNo, v)
+          state.currentVersion.set(goalId, nextNo)
+          const dec = {
+            id: (state.decisions.get(goalId).length || 0) + 1,
+            trigger: 'behind_schedule',
+            evidence_snapshot: { progress: { tasks_due: 8, tasks_incomplete: 6 }, evidence_count: 3 },
+            reasoning_text: '25% of tasks are overdue. Added a catch-up task to recover the schedule.',
+            tool_trace: [
+              { tool: 'get_learner_state', args: { goal_id: goalId }, result_summary: 'goal, deadline, hours_per_day' },
+              { tool: 'get_progress_summary', args: { goal_id: goalId }, result_summary: 'tasks_due=8, tasks_incomplete=6' },
+              { tool: 'get_evidence_since_last_plan', args: { goal_id: goalId }, result_summary: '3 items' },
+              { tool: 'llm.decide_replan', args: { explanation_language: g.explanation_language }, result_summary: 'decision=new_version' },
+              { tool: 'validator.validate_plan', args: { attempt: 0 }, result_summary: 'ok' },
+              { tool: 'create_plan_version', args: { task_count: newTasks.length }, result_summary: `version_no=${nextNo}` }
+            ],
+            decision: 'new_version', resulting_plan_version_id: v.id, created_at: nowIso()
+          }
+          state.decisions.get(goalId).push(dec)
+        } catch { /* goal gone */ }
+      }, 1200 + Math.random() * 1500)
+      return { scenario, evidence_created: 3, trigger_fired: true, decision_id: null }
     }
     // default: normalization_failure -> reuse seed decision 1 pattern for this goal
-    return doReplan(goalId, 'low_mastery', g.explanation_language)
+    scheduleReplan(goalId, 'low_mastery', g.explanation_language)
+    return { scenario, evidence_created: 4, trigger_fired: true, decision_id: null }
+  }
+
+  // POST /goals/{id}/checkpoint  (end-of-day re-quiz, mirrors A's checkpoint endpoint)
+  if (m === 'POST' && p === `/goals/${goalId}/checkpoint`) {
+    const all = conceptsForGoal(goalId)
+    if (!all.length) httpError(400, 'confirm a concept map first')
+    let scoped
+    if (body.concept_ids && body.concept_ids.length) {
+      const wanted = new Set(body.concept_ids)
+      scoped = all.filter((c) => wanted.has(c.id))
+    } else if (body.day) {
+      const cur = state.currentVersion.get(goalId)
+      const v = cur ? state.versions.get(goalId).get(cur) : null
+      const wanted = new Set((v?.tasks || []).filter((t) => t.day === body.day).map((t) => t.concept_id))
+      scoped = all.filter((c) => wanted.has(c.id))
+    } else {
+      scoped = all
+    }
+    if (!scoped.length) httpError(400, 'no concepts match the requested checkpoint scope')
+    const lang = state.goals.get(goalId).explanation_language
+    const d = generateDiagnostic(goalId) // reuse the question generator, then filter to scope
+    const scopedIds = new Set(scoped.map((c) => c.id))
+    const questions = d.questions.filter((q) => scopedIds.has(q.concept_id))
+    const checkpointId = 5000 + (state.diagnostics.get(goalId) ? 1 : 0) + Math.floor(Math.random() * 1000)
+    state.diagnostics.set(goalId, { kind: 'checkpoint', diagnostic_id: checkpointId, questions })
+    return {
+      checkpoint_id: checkpointId,
+      concept_ids: [...scopedIds],
+      questions: questions.map((q) => ({ id: q.id, concept_id: q.concept_id, prompt: q.prompt, options: q.options }))
+    }
+  }
+
+  // POST /goals/{id}/checkpoint/submit
+  if (m === 'POST' && p === `/goals/${goalId}/checkpoint/submit`) {
+    const diag = state.diagnostics.get(goalId)
+    const per = {}
+    ;(body.answers || []).forEach((a) => {
+      const q = diag?.questions?.find((x) => x.id === a.question_id)
+      if (!q) return
+      const idx = q.options.indexOf(a.choice)
+      per[q.concept_id] = Math.max(0.2, 1 - idx * 0.25)
+    })
+    const triggerFired = Object.values(per).some((s) => s < 0.5)
+    if (triggerFired) scheduleReplan(goalId, 'quiz_fail', g.explanation_language)
+    return { per_concept_score: per, trigger_fired: triggerFired }
   }
 
   // GET /goals/{id}/decisions
@@ -472,13 +554,15 @@ function route(method, path, body) {
     }))
   }
 
-  // GET /goals/{id}/decisions/{decision_id}
+  // GET /goals/{id}/decisions/{decision_id}[?include_trace=true]
   const dRe = /^\/goals\/\d+\/decisions\/(\d+)$/
-  const dM = p.match(dRe)
+  const dPath = p.split('?')[0]
+  const dM = dPath.match(dRe)
   if (m === 'GET' && dM) {
+    const includeTrace = (p.split('?')[1] || '').includes('include_trace=true')
     const d = state.decisions.get(goalId).find((x) => x.id === Number(dM[1]))
     if (!d) httpError(404, 'decision not found')
-    return d
+    return includeTrace ? d : { ...d, tool_trace: [] }
   }
 
   return httpError(404, 'unknown endpoint ' + m + ' ' + p)
@@ -508,7 +592,7 @@ function doReplan(goalId, trigger, lang) {
       ? '你最近关于 Normalization 的测验得分较低，且多个 Normalization 任务未完成。由于该概念是后续主题的基础，我在继续之前新增了两个 Normalization 巩固任务。'
       : 'Your recent Normalization quiz score was low and several Normalization tasks are incomplete. Since this concept is foundational, I added a Normalization remediation task before continuing.',
     tool_trace: [
-      { tool: 'get_learner_state', args: { goal_id: goalId }, result_summary: 'goal_text, deadline, weekly_hours, explanation_language' },
+      { tool: 'get_learner_state', args: { goal_id: goalId }, result_summary: 'goal_text, deadline, hours_per_day, explanation_language' },
       { tool: 'get_progress_summary', args: { goal_id: goalId }, result_summary: 'tasks_total, tasks_done, tasks_due, tasks_incomplete' },
       { tool: 'get_evidence_since_last_plan', args: { goal_id: goalId }, result_summary: '4 items' },
       { tool: 'get_current_plan', args: { goal_id: goalId }, result_summary: 'plan_version_id, version_no, tasks' },
@@ -521,6 +605,14 @@ function doReplan(goalId, trigger, lang) {
   }
   state.decisions.get(goalId).push(dec)
   return { scenario: trigger, evidence_created: 4, trigger_fired: true, decision_id: dec.id }
+}
+
+// Async-replan simulation (mirrors the real backend's BackgroundTasks): the
+// decision does NOT exist yet when the triggering call returns — it lands a
+// short delay later, so the frontend's poll-on-decisions loop (B-RC2-2) has
+// something real to observe in mock mode too, instead of already being done.
+function scheduleReplan(goalId, trigger, lang) {
+  setTimeout(() => { try { doReplan(goalId, trigger, lang) } catch { /* goal gone */ } }, 1200 + Math.random() * 1500)
 }
 
 // Expose a reset for the demo.

@@ -41,11 +41,24 @@ async function request(method, path, body) {
     return r
   }
   const isForm = body instanceof FormData
-  const res = await fetch(url, {
-    method,
-    headers: isForm ? undefined : { 'Content-Type': 'application/json' },
-    body: isForm ? body : (body ? JSON.stringify(body) : undefined)
-  })
+  let res
+  try {
+    res = await fetch(url, {
+      method,
+      headers: isForm ? undefined : { 'Content-Type': 'application/json' },
+      body: isForm ? body : (body ? JSON.stringify(body) : undefined)
+    })
+  } catch (networkErr) {
+    // fetch() throws (not a rejected HTTP status) when the request never reached
+    // a server: backend down, no network, CORS block, DNS failure, etc. This is
+    // NOT the same as a real 200-with-empty-data response — the caller must be
+    // able to tell "the server said there's nothing" apart from "we never heard
+    // back", so views don't render zeros as if they were real (B-RC2-3).
+    const err = new Error('Cannot reach the server. Check your connection and retry.')
+    err.offline = true
+    err.status = 0
+    throw err
+  }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throwApiError(res.status, data, method, path)
   return { ok: true, status: res.status, data }
@@ -56,6 +69,7 @@ const api = {
 
   // ---- Goals ----
   createGoal(body) { return request('POST', '/goals', body).then((r) => r.data) },
+  getGoals() { return request('GET', '/goals').then((r) => r.data) },
   getGoal(id) { return request('GET', `/goals/${id}`).then((r) => r.data) },
   setLanguage(id, lang) { return request('PATCH', `/goals/${id}/language`, { explanation_language: lang }).then((r) => r.data) },
 
@@ -76,6 +90,16 @@ const api = {
   generateDiagnostic(id) { return request('POST', `/goals/${id}/diagnostic`).then((r) => r.data) },
   submitDiagnostic(id, answers) { return request('POST', `/goals/${id}/diagnostic/submit`, { answers }).then((r) => r.data) },
 
+  // ---- Checkpoint (end-of-day re-quiz) ----
+  generateCheckpoint(id, { conceptIds, day, numQuestions } = {}) {
+    return request('POST', `/goals/${id}/checkpoint`, {
+      concept_ids: conceptIds || [], day: day || null, num_questions: numQuestions || null
+    }).then((r) => r.data)
+  },
+  submitCheckpoint(id, checkpointId, answers) {
+    return request('POST', `/goals/${id}/checkpoint/submit`, { checkpoint_id: checkpointId, answers }).then((r) => r.data)
+  },
+
   // ---- Plans ----
   generatePlan(id) { return request('POST', `/goals/${id}/plan/generate`).then((r) => r.data) },
   getCurrentPlan(id) { return request('GET', `/goals/${id}/plan/current`).then((r) => r.data) },
@@ -85,6 +109,7 @@ const api = {
 
   // ---- Tasks / Evidence ----
   completeTask(taskId) { return request('POST', `/tasks/${taskId}/complete`).then((r) => r.data) },
+  uncompleteTask(taskId) { return request('POST', `/tasks/${taskId}/uncomplete`).then((r) => r.data) },
   addEvidence(id, body) { return request('POST', `/goals/${id}/evidence`, body).then((r) => r.data) },
 
   // ---- Replan / Simulate ----
@@ -93,7 +118,10 @@ const api = {
 
   // ---- Decisions ----
   getDecisions(id) { return request('GET', `/goals/${id}/decisions`).then((r) => r.data) },
-  getDecision(id, decisionId) { return request('GET', `/goals/${id}/decisions/${decisionId}`).then((r) => r.data) }
+  getDecision(id, decisionId, includeTrace = false) {
+    const q = includeTrace ? '?include_trace=true' : ''
+    return request('GET', `/goals/${id}/decisions/${decisionId}${q}`).then((r) => r.data)
+  }
 }
 
 export default api
