@@ -268,7 +268,7 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
 
     <OfflineBanner :error="loadError" @retry="load" />
 
-    <div v-if="toast" class="card" style="padding:10px 14px;background:var(--agent-soft);border-color:#f0cfc6;color:var(--agent);margin-bottom:16px;">{{ toast }}</div>
+    <div v-if="toast" class="card" style="padding:10px 14px;background:var(--agent-soft);border-color:var(--agent);color:var(--agent);margin-bottom:16px;">{{ toast }}</div>
     <div v-if="updatingPlan" class="card" style="padding:10px 14px;background:var(--surface-2);margin-bottom:16px;">
       <span class="faint">⏳ {{ $t('home.updatingPlan') }}</span>
     </div>
@@ -339,7 +339,7 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
 
 <style scoped>
 .day-card.locked { opacity: .55; }
-.day-card.remediation { border-color: #f0cfc6; }
+.day-card.remediation { border-color: var(--agent); }
 .day-head { padding: 8px 6px 4px; }
 .quiz-toggle-row { padding: 10px 12px; gap: 10px; align-items: center; border-top: 1px solid var(--border); }
 .task-row { padding: 12px; gap: 12px; border-bottom: 1px solid var(--border); }
