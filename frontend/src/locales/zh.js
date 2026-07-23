@@ -38,6 +38,10 @@ export default {
     startCheckpoint: '开始检测 →',
     checkpointPassed: '检测通过 — 明天已解锁。',
     checkpointFailed: '有些概念还需要加强 — 智能体可能会调整接下来的安排。',
+    takeQuiz: '开始测验 →',
+    viewResult: '查看结果',
+    hideResult: '收起结果',
+    quizLockedHint: '先完成所有任务',
     error: '错误：{message}'
   },
   checkpoint: {
