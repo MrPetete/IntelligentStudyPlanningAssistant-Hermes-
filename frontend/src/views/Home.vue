@@ -34,12 +34,42 @@ function markDayCleared(day) {
 }
 const clearedDays = ref(new Set())
 
+// Which plan-version diff introduced each task, so replanned work can render
+// in its own "Remediation #N" block instead of blending into a done day
+// (B-V2-2). Full-merge replanning carries every parent task forward as a
+// brand-new row under the new version, matched only by (description, day) —
+// so a task's *current* id never matches the id in an older version's diff.
+// We resolve identity by (description, day) against the live task list
+// instead (see TraceLearn_Package/Member A_Progress/A-V2-5_VERSION_TAGGING_DESIGN_NOTE.md).
+const remediationSources = ref([]) // [{ versionNo, keys: Set<"description__day"> }]
+
+function taskKey(t) { return `${t.description}__${t.day}` }
+
+async function loadRemediationBlocks() {
+  const agentVersions = store.versions
+    .filter((v) => v.created_by === 'agent')
+    .sort((a, b) => a.version_no - b.version_no)
+  const blocks = []
+  for (const v of agentVersions) {
+    try {
+      const diff = await api.getDiff(store.goalId, v.version_no - 1, v.version_no)
+      const keys = new Set((diff.added_tasks || []).map(taskKey))
+      if (keys.size) blocks.push({ versionNo: v.version_no, keys })
+    } catch {
+      // A version whose parent no longer resolves (shouldn't happen under
+      // append-only history) just contributes no block rather than breaking load.
+    }
+  }
+  remediationSources.value = blocks
+}
+
 async function load() {
   loadError.value = null
   try {
     await refreshVersions(store.goalId)
     tasks.value = store.currentPlan ? [...store.currentPlan.tasks] : []
     clearedDays.value = loadClearedDays()
+    await loadRemediationBlocks()
   } catch (e) {
     // B-RC2-3: a failed load must not render as "0 tasks" — keep whatever was
     // on screen and show a retry banner instead of silently zeroing out.
@@ -48,37 +78,80 @@ async function load() {
 }
 onMounted(load)
 
+// Resolve each remediation source's task identities against the LIVE task
+// list (current ids), claiming each task for at most one block.
+const remediationUnits = computed(() => {
+  const claimed = new Set()
+  return remediationSources.value.map((b, i) => {
+    const blockTasks = tasks.value.filter((t) => {
+      if (claimed.has(t.id) || !b.keys.has(taskKey(t))) return false
+      claimed.add(t.id)
+      return true
+    })
+    return {
+      kind: 'remediation',
+      key: `remediation-${b.versionNo}`,
+      label: i + 1,
+      tasks: blockTasks,
+      conceptIds: [...new Set(blockTasks.map((t) => t.concept_id).filter((c) => c != null))]
+    }
+  }).filter((u) => u.tasks.length)
+})
+const remediationTaskIds = computed(() =>
+  new Set(remediationUnits.value.flatMap((u) => u.tasks.map((t) => t.id))))
+
 // ---- day grouping + gating (B-RC2-1) --------------------------------------
+// Tasks claimed by a remediation block render there instead of under their day.
 const byDay = computed(() => {
   const map = {}
   for (const t of tasks.value) {
+    if (remediationTaskIds.value.has(t.id)) continue
     const d = t.day || 'unscheduled'
     ;(map[d] ||= []).push(t)
   }
   return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0]))
 })
 
-// The active (interactive) day is the earliest day that still has a pending
-// task OR whose checkpoint hasn't been cleared yet, even if all its tasks are
-// done. Every day strictly after it is locked. Days before it (fully done +
-// checkpoint-cleared) render normally but are no longer clickable either —
-// there is nothing left to check off there.
-const activeDay = computed(() => {
-  for (const [day, list] of byDay.value) {
-    const allDone = list.every((t) => t.status === 'done')
-    if (!allDone || !clearedDays.value.has(day)) return day
-  }
-  return null // every day done + cleared
-})
-function isDayLocked(day) { return activeDay.value !== null && day > activeDay.value }
-function isDayActive(day) { return day === activeDay.value }
+// Unified, ORDERED list of interactive units: original days first (date
+// order), then each remediation block in the order its replan happened.
+// Gating (B-RC2-1) applies uniformly across this whole sequence — the same
+// "earliest incomplete unit is interactive, everything after is locked" rule
+// that governed days now also governs remediation blocks (B-V2-2: reuse the
+// day-gate/quiz function, don't fork a second gating system).
+const units = computed(() => [
+  ...byDay.value.map(([day, list]) => ({ kind: 'day', key: day, label: day, tasks: list })),
+  ...remediationUnits.value.map((u) => ({ ...u, label: `Remediation #${u.label}` }))
+])
 
-const activeDayTasks = computed(() =>
-  byDay.value.find(([d]) => d === activeDay.value)?.[1] || [])
+// The active (interactive) unit is the earliest one that still has a pending
+// task OR whose checkpoint hasn't been cleared yet, even if all its tasks are
+// done. Everything strictly after it is locked.
+const activeUnit = computed(() => {
+  for (const u of units.value) {
+    const allDone = u.tasks.length > 0 && u.tasks.every((t) => t.status === 'done')
+    if (!allDone || !clearedDays.value.has(u.key)) return u.key
+  }
+  return null // every unit done + cleared
+})
+function unitIndex(key) { return units.value.findIndex((u) => u.key === key) }
+function isDayLocked(key) { return activeUnit.value !== null && unitIndex(key) > unitIndex(activeUnit.value) }
+function isDayActive(key) { return key === activeUnit.value }
+
+const activeUnitObj = computed(() => units.value.find((u) => u.key === activeUnit.value))
 const activeDayAllDone = computed(() =>
-  activeDayTasks.value.length > 0 && activeDayTasks.value.every((t) => t.status === 'done'))
+  !!activeUnitObj.value && activeUnitObj.value.tasks.length > 0 &&
+  activeUnitObj.value.tasks.every((t) => t.status === 'done'))
 const activeDayNeedsCheckpoint = computed(() =>
-  activeDayAllDone.value && activeDay.value && !clearedDays.value.has(activeDay.value))
+  activeDayAllDone.value && activeUnit.value && !clearedDays.value.has(activeUnit.value))
+
+// A task may live in a day OR a remediation block — resolve which unit key
+// gates it so checkOff/undoCheck stay a single code path for both.
+function unitKeyForTask(task) {
+  if (remediationTaskIds.value.has(task.id)) {
+    return remediationUnits.value.find((u) => u.tasks.some((t) => t.id === task.id))?.key
+  }
+  return task.day || 'unscheduled'
+}
 
 // ---- async replan (B-RC2-2): poll, never block ----------------------------
 async function watchForReplan() {
@@ -89,6 +162,7 @@ async function watchForReplan() {
   if (fresh) {
     await refreshVersions(store.goalId)
     tasks.value = [...store.currentPlan.tasks]
+    await loadRemediationBlocks() // a landed replan may introduce a new Remediation #N block
     if (fresh.resulting_plan_version_id) {
       toast.value = t('app.planUpdatedToast', { version: store.currentPlan.version_no })
       setTimeout(() => (toast.value = ''), 5000)
@@ -97,7 +171,7 @@ async function watchForReplan() {
 }
 
 async function checkOff(task) {
-  if (isDayLocked(task.day) || task.status === 'done') return
+  if (isDayLocked(unitKeyForTask(task)) || task.status === 'done') return
   busy.value = true
   try {
     const res = await api.completeTask(task.id)
@@ -115,10 +189,10 @@ async function checkOff(task) {
 }
 
 async function undoCheck(task) {
-  // Uncheck is only offered on the CURRENT interactive day (spec: "a misclick
-  // on the current day"), not on earlier already-cleared days — those are
-  // done history, same as a plan version's carried-forward tasks.
-  if (!isDayActive(task.day)) return
+  // Uncheck is only offered on the CURRENT interactive unit (day OR
+  // remediation block — spec: "a misclick on the current day"), not on
+  // earlier already-cleared units — those are done history.
+  if (!isDayActive(unitKeyForTask(task))) return
   busy.value = true
   try {
     await api.uncompleteTask(task.id)
@@ -130,7 +204,7 @@ async function undoCheck(task) {
 }
 
 function onCheckpointDone({ passed, trigger_fired }) {
-  markDayCleared(activeDay.value)
+  markDayCleared(activeUnit.value)
   clearedDays.value = loadClearedDays()
   checkpointResult.value = passed
   showCheckpoint.value = false
@@ -191,17 +265,18 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
       <div class="empty">{{ $t('home.noTasks') }}</div>
     </div>
 
-    <div v-for="[day, list] in byDay" :key="day" class="card day-card"
-         :class="{ locked: isDayLocked(day) }" style="padding:8px 8px 4px;margin-bottom:12px;">
+    <div v-for="u in units" :key="u.key" class="card day-card"
+         :class="{ locked: isDayLocked(u.key), remediation: u.kind === 'remediation' }" style="padding:8px 8px 4px;margin-bottom:12px;">
       <div class="row day-head">
-        <strong>{{ day }}</strong>
-        <span v-if="isDayLocked(day)" class="faint" style="font-size:12px;">🔒 {{ $t('home.lockedHint') }}</span>
+        <strong>{{ u.kind === 'remediation' ? u.label : u.label }}</strong>
+        <span v-if="u.kind === 'remediation'" class="badge agent" style="font-size:11px;">{{ $t('home.remediationBadge') }}</span>
+        <span v-if="isDayLocked(u.key)" class="faint" style="font-size:12px;">🔒 {{ $t('home.lockedHint') }}</span>
         <span class="spacer"></span>
       </div>
-      <div v-for="t in list" :key="t.id" class="task-row row" :class="{ done: t.status === 'done', locked: isDayLocked(day) }">
+      <div v-for="t in u.tasks" :key="t.id" class="task-row row" :class="{ done: t.status === 'done', locked: isDayLocked(u.key) }">
         <button v-if="t.status !== 'done'" class="check" @click="checkOff(t)"
-                :disabled="busy || isDayLocked(day)" :title="$t('home.markDone')">○</button>
-        <button v-else-if="day === activeDay" class="check done" @click="undoCheck(t)"
+                :disabled="busy || isDayLocked(u.key)" :title="$t('home.markDone')">○</button>
+        <button v-else-if="u.key === activeUnit" class="check done" @click="undoCheck(t)"
                 :disabled="busy" :title="$t('home.undo')">✓</button>
         <span v-else class="check done">✓</span>
         <div class="col" style="gap:3px;min-width:0;">
@@ -217,13 +292,16 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
 
     <div v-if="activeDayNeedsCheckpoint && !showCheckpoint" class="card" style="padding:16px;background:var(--user-soft);border-color:#cfe9dd;margin-bottom:16px;">
       <div class="row">
-        <span>✅ {{ $t('home.dayComplete') }}</span>
+        <span>✅ {{ activeUnitObj?.kind === 'remediation' ? $t('home.remediationComplete') : $t('home.dayComplete') }}</span>
         <span class="spacer"></span>
         <button class="primary" @click="showCheckpoint = true">{{ $t('home.startCheckpoint') }}</button>
       </div>
     </div>
 
-    <CheckpointQuiz v-if="showCheckpoint" :goal-id="store.goalId" :day="activeDay" @done="onCheckpointDone" />
+    <CheckpointQuiz v-if="showCheckpoint" :goal-id="store.goalId"
+                    :day="activeUnitObj?.kind === 'remediation' ? null : activeUnit"
+                    :concept-ids="activeUnitObj?.kind === 'remediation' ? activeUnitObj.conceptIds : null"
+                    @done="onCheckpointDone" />
 
     <div class="row" style="justify-content:flex-end;margin-top:18px;">
       <button @click="simulate" :disabled="busy">{{ $t('home.simulate') }}</button>
@@ -233,6 +311,7 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
 
 <style scoped>
 .day-card.locked { opacity: .55; }
+.day-card.remediation { border-color: #f0cfc6; }
 .day-head { padding: 8px 6px 4px; }
 .task-row { padding: 12px; gap: 12px; border-bottom: 1px solid var(--border); }
 .task-row:last-child { border-bottom: 0; }

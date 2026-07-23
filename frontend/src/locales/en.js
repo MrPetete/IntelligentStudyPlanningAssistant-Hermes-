@@ -33,6 +33,8 @@ export default {
     replanQueued: 'Checking whether your plan needs to change…',
     simulate: '⚡ Simulate evidence (demo)',
     dayComplete: 'All of today\'s tasks are done — take the checkpoint to unlock tomorrow.',
+    remediationBadge: 'Remediation',
+    remediationComplete: 'This remediation block is done — take the checkpoint to unlock what\'s next.',
     startCheckpoint: 'Take checkpoint quiz →',
     checkpointPassed: 'Checkpoint passed — tomorrow is unlocked.',
     checkpointFailed: 'A few concepts need more work — the agent may adjust upcoming days.',
@@ -47,7 +49,10 @@ export default {
     answerAll: 'Please answer every question.',
     resultTitle: 'Checkpoint results',
     close: 'Continue',
-    scorePrefix: 'estimated understanding'
+    scorePrefix: 'estimated understanding',
+    breakdownTitle: 'Question by question',
+    noAnswer: 'No answer',
+    correctAnswerPrefix: 'Correct answer:'
   },
   onboarding: {
     eyebrow: 'TraceLearn · Onboarding',

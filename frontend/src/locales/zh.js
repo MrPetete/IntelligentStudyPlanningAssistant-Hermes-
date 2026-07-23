@@ -33,6 +33,8 @@ export default {
     replanQueued: '正在检查计划是否需要调整…',
     simulate: '⚡ 模拟证据（演示）',
     dayComplete: '今天的任务已全部完成 — 完成检测以解锁明天。',
+    remediationBadge: '补救练习',
+    remediationComplete: '这一组补救任务已完成 — 完成检测以解锁下一部分。',
     startCheckpoint: '开始检测 →',
     checkpointPassed: '检测通过 — 明天已解锁。',
     checkpointFailed: '有些概念还需要加强 — 智能体可能会调整接下来的安排。',
@@ -47,7 +49,10 @@ export default {
     answerAll: '请回答所有问题。',
     resultTitle: '检测结果',
     close: '继续',
-    scorePrefix: '估计掌握程度'
+    scorePrefix: '估计掌握程度',
+    breakdownTitle: '逐题回顾',
+    noAnswer: '未作答',
+    correctAnswerPrefix: '正确答案：'
   },
   onboarding: {
     eyebrow: 'TraceLearn · 引导流程',

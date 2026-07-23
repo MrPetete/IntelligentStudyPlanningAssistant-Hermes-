@@ -4,7 +4,10 @@ import { api } from '../store.js'
 
 const props = defineProps({
   goalId: { type: Number, required: true },
-  day: { type: String, required: true }
+  day: { type: String, default: null },
+  // Remediation blocks span whatever days the agent picked, not one single
+  // day — scope by their concepts directly instead (B-V2-2).
+  conceptIds: { type: Array, default: null }
 })
 const emit = defineEmits(['done']) // done({ passed, per_concept_score, trigger_fired })
 
@@ -21,7 +24,10 @@ async function load() {
   loading.value = true
   err.value = ''
   try {
-    checkpoint.value = await api.generateCheckpoint(props.goalId, { day: props.day })
+    checkpoint.value = await api.generateCheckpoint(props.goalId,
+      props.conceptIds && props.conceptIds.length
+        ? { conceptIds: props.conceptIds }
+        : { day: props.day })
   } catch (e) {
     err.value = e.message
   } finally {
@@ -51,6 +57,9 @@ async function submit() {
   }
 }
 function pct(s) { return Math.round((s ?? 0) * 100) }
+function questionPrompt(questionId) {
+  return checkpoint.value?.questions?.find((q) => q.id === questionId)?.prompt || ''
+}
 </script>
 
 <template>
@@ -89,6 +98,23 @@ function pct(s) { return Math.round((s ?? 0) * 100) }
           <strong>{{ pct(score) }}%</strong>
         </div>
       </div>
+
+      <div v-if="result.per_question && result.per_question.length" class="stack" style="margin-top:16px;gap:8px;">
+        <div class="muted" style="font-size:13px;">{{ $t('checkpoint.breakdownTitle') }}</div>
+        <div v-for="pq in result.per_question" :key="pq.question_id" class="card question-result"
+             :class="pq.is_correct ? 'correct' : 'incorrect'" style="padding:12px;">
+          <div style="font-weight:600;margin-bottom:6px;">{{ questionPrompt(pq.question_id) }}</div>
+          <div class="row" style="gap:6px;flex-wrap:wrap;">
+            <span class="badge" :class="pq.is_correct ? 'ok' : 'bad'">
+              {{ pq.submitted ?? $t('checkpoint.noAnswer') }}
+            </span>
+            <span v-if="!pq.is_correct && pq.correct_choice" class="badge ok">
+              {{ $t('checkpoint.correctAnswerPrefix') }} {{ pq.correct_choice }}
+            </span>
+          </div>
+        </div>
+      </div>
+
       <slot name="after-result" :result="result" />
     </div>
   </div>
@@ -96,4 +122,7 @@ function pct(s) { return Math.round((s ?? 0) * 100) }
 
 <style scoped>
 .q { background: var(--surface); }
+.question-result.correct { border-color: #b7dfc4; background: var(--user-soft, #f0f9f3); }
+.question-result.incorrect { border-color: #f0c6c6; background: var(--agent-soft, #fbeeee); }
+.badge.bad { background: #f8d7d7; color: #a33a3a; }
 </style>
