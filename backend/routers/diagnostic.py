@@ -96,7 +96,15 @@ def generate_diagnostic(goal_id: int, session: Session = Depends(get_session)) -
     if not concepts:
         raise HTTPException(400, "confirm a concept map first")
 
-    concept_dicts = [{"id": c.id, "canonical_term": c.canonical_term} for c in concepts]
+    concept_dicts = [
+        {
+            "id": c.id,
+            "canonical_term": c.canonical_term,
+            "explanation": c.explanation or "",
+            "order_index": c.order_index,
+        }
+        for c in concepts
+    ]
     try:
         questions = llm_client.generate_diagnostic(
             concepts=concept_dicts,
@@ -212,7 +220,19 @@ def generate_checkpoint(goal_id: int, body: CheckpointGenerate,
         raise HTTPException(400, "no concepts match the requested checkpoint scope")
 
     num_questions = body.num_questions or DIAGNOSTIC_NUM_QUESTIONS
-    concept_dicts = [{"id": c.id, "canonical_term": c.canonical_term} for c in scoped]
+    # C-V2-2: include explanation + order_index, not just id/canonical_term.
+    # Without explanation, _diagnostic_user_prompt has nothing to anchor the
+    # question to beyond the bare term, so the LLM tends to fall back on
+    # general knowledge about the term instead of what was actually studied.
+    concept_dicts = [
+        {
+            "id": c.id,
+            "canonical_term": c.canonical_term,
+            "explanation": c.explanation or "",
+            "order_index": c.order_index,
+        }
+        for c in scoped
+    ]
     try:
         questions = llm_client.generate_diagnostic(
             concepts=concept_dicts,
