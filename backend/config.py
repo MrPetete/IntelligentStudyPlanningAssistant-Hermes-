@@ -18,7 +18,24 @@ DATABASE_URL = "sqlite:///./tracelearn.db"
 # Defaults to True so nobody goes live by accident and the offline demo (D18)
 # keeps working. Flip to False ONLY via a local .env once the endpoint is set.
 import os
+from pathlib import Path
 
+# Load a git-ignored backend/.env BEFORE reading any env var below, so a plain
+# `uvicorn main:app` picks up MOCK_LLM / the LMU key without the tester manually
+# `set`-ing them (C-1: without this the process silently stays mock_llm:true and
+# every tester run is invalidated). Idempotent and non-fatal: a real environment
+# variable still wins over the file, and a missing python-dotenv just no-ops.
+# Load from the backend dir explicitly so it works regardless of the cwd uvicorn
+# was launched from.
+try:
+    from dotenv import load_dotenv
+
+    load_dotenv(Path(__file__).parent / ".env")
+except ImportError:
+    pass
+
+# MOCK_LLM defaults to True (the safe default stays) — a present .env only now
+# actually takes effect.
 MOCK_LLM = os.getenv("MOCK_LLM", "true").strip().lower() in ("1", "true", "yes")
 
 # "Hermes" is the project's name for the swappable tool-calling model behind
@@ -81,6 +98,7 @@ DEFAULT_EXPLANATION_LANGUAGE = "en"
 # ---------------------------------------------------------------------------
 TRIGGERS = {
     "behind_schedule_pct": 0.25,   # >25% of due tasks incomplete -> consider replan
+    "ahead_schedule_pct": 0.20,    # >20% of not-yet-due tasks already done -> consider pulling work forward
     "low_mastery_threshold": 0.40, # concept mastery below this after evidence -> consider
     "quiz_fail_threshold": 0.50,   # quiz score below this on a concept -> consider
     "min_evidence_events": 3,      # never replan on a single data point

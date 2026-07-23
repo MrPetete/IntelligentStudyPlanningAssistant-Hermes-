@@ -411,6 +411,41 @@ def _decide_replan_user_prompt(
         for c in concepts
     ) or "(no concepts on record)"
 
+    # B-f2: surface the DERIVED weak set explicitly so the model prioritizes the
+    # concepts the evidence actually flags, rather than inferring it from the
+    # mastery lines above. Weak = mastery below the low-mastery threshold OR the
+    # concept of a failing quiz_result in recent evidence (same thresholds the
+    # deterministic trigger gate uses, so prompt and gate agree on "weak").
+    from config import TRIGGERS
+
+    low_thr = TRIGGERS["low_mastery_threshold"]
+    fail_thr = TRIGGERS["quiz_fail_threshold"]
+    term_by_id = {
+        c.get("concept_id"): c.get("canonical_term")
+        for c in concepts
+        if c.get("concept_id") is not None
+    }
+    weak_terms: dict[Any, str] = {}
+    for c in concepts:
+        m = c.get("mastery")
+        if isinstance(m, (int, float)) and m < low_thr and c.get("canonical_term"):
+            weak_terms[c.get("concept_id")] = c.get("canonical_term")
+    for ev in evidence:
+        if ev.get("type") == "quiz_result":
+            score = (ev.get("payload") or {}).get("score")
+            cid = ev.get("concept_id")
+            if score is not None and score < fail_thr and cid in term_by_id:
+                weak_terms[cid] = term_by_id[cid]
+    weak_line = (
+        "The learner is currently weakest on: "
+        + ", ".join(sorted(weak_terms.values()))
+        + ". Prioritize remediation tasks for these concept(s) before introducing "
+        "any new material."
+        if weak_terms
+        else "No concept currently falls below the weak-mastery / failed-quiz "
+        "thresholds; there is no specific weak concept to prioritize."
+    )
+
     current_tasks = current_plan.get("tasks", [])
     plan_lines = "\n".join(
         f"- {t.get('canonical_term') or ('concept_id=' + str(t.get('concept_id')))}"
@@ -418,15 +453,68 @@ def _decide_replan_user_prompt(
         for t in current_tasks
     ) or "(current plan has no tasks)"
 
+    # B-f3 slack context: size any pulled-forward work to the REMAINING time
+    # budget so the agent stays "proportionate to remaining time" (lead's steer),
+    # never overloading. Reuse available_minutes_for — the SAME helper the plan
+    # validator and generation use — so prompt, gate and validator agree on the
+    # budget. Remaining slack = whole-window budget minus minutes already
+    # committed to not-yet-done, today-or-later tasks. Also lists the concepts
+    # not yet on the plan (candidates to pull forward).
+    from datetime import datetime as _datetime
+
+    from agent.validator import available_minutes_for
+
+    today = date.today()
+    deadline_str = learner_state.get("deadline")
+    deadline_d = None
+    if deadline_str:
+        try:
+            deadline_d = date.fromisoformat(str(deadline_str)[:10])
+        except ValueError:
+            deadline_d = None
+    days_remaining = (max(0, (deadline_d - today).days) if deadline_d
+                      else learner_state.get("days_remaining"))
+
+    hours_per_day = learner_state.get("hours_per_day") or 0.0
+    total_budget = (available_minutes_for(hours_per_day, deadline_d, _datetime.now())
+                    if deadline_d else 0.0)
+    today_iso = today.isoformat()
+    committed = sum(
+        int(t.get("est_minutes") or 0)
+        for t in current_tasks
+        if t.get("status", "pending") != "done"
+        and (t.get("day") is None or str(t.get("day"))[:10] >= today_iso)
+    )
+    remaining_slack = int(max(0.0, total_budget - committed))
+
+    scheduled_ids = {t.get("concept_id") for t in current_tasks
+                     if t.get("concept_id") is not None}
+    unscheduled = sorted(
+        c.get("canonical_term") for c in concepts
+        if c.get("concept_id") not in scheduled_ids and c.get("canonical_term")
+    )
+    slack_line = (
+        f"Scheduling budget: about {remaining_slack} minute(s) of study time remain "
+        "unallocated before the deadline. "
+        + (f"Not-yet-scheduled concept(s): {', '.join(unscheduled)}. "
+           if unscheduled else "All confirmed concepts are already scheduled. ")
+        + "If (and ONLY if) the learner is ahead of schedule, you MAY pull a "
+        "PROPORTIONATE amount of this remaining material forward — sized to the "
+        "remaining time budget above, never overloading a day. If they are not "
+        "ahead, ignore this budget and focus on remediation of the weak concepts."
+    )
+
     return (
-        f"Today's date is {date.today().isoformat()}. Any delta task's `day` must "
+        f"Today's date is {today_iso}. Any delta task's `day` must "
         "be on or after today's date and use the correct current year — do not "
         "date tasks in a past year.\n"
         f"Goal: {learner_state.get('goal_text')}\n"
         f"Deadline: {learner_state.get('deadline')} "
-        f"({learner_state.get('days_remaining')} days remaining)\n"
+        f"({days_remaining} days remaining)\n"
         f"Hours available per day: {learner_state.get('hours_per_day')}\n\n"
         f"Concept mastery signals:\n{concept_lines}\n\n"
+        f"{weak_line}\n\n"
+        f"{slack_line}\n\n"
         f"Progress summary:\n{json.dumps(progress, ensure_ascii=False)}\n\n"
         f"Current plan (version {current_plan.get('version_no')}):\n{plan_lines}\n\n"
         f"Evidence since the last plan ({len(evidence)} events):\n"

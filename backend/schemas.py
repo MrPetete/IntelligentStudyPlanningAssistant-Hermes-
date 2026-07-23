@@ -114,8 +114,23 @@ class DiagnosticSubmit(BaseModel):
     answers: list[DiagnosticAnswer]
 
 
+class PerQuestionResult(BaseModel):
+    """Question-by-question right/wrong for the result screen (B-f1). Safe to
+    reveal the correct option now — the quiz is over. `correct_choice` is the
+    resolved option TEXT (not the stored letter); `submitted` is what the learner
+    picked (None if unanswered)."""
+    question_id: int
+    submitted: str | None = None
+    correct_choice: str | None = None
+    is_correct: bool = False
+
+
 class DiagnosticResult(BaseModel):
     per_concept_score: dict[int, float]  # {concept_id: 0..1} — heuristic signal, not a measurement
+    # Onboarding isn't a graded re-test, but we return the same per-question
+    # detail for UI consistency (B-f1, "worth deciding" note). Optional — an
+    # onboarding screen may ignore it.
+    per_question: list[PerQuestionResult] = Field(default_factory=list)
 
 
 # ===========================================================================
@@ -148,6 +163,9 @@ class CheckpointSubmit(BaseModel):
 class CheckpointResult(BaseModel):
     per_concept_score: dict[int, float]  # {concept_id: 0..1}
     trigger_fired: bool = False          # did the re-test signal queue a replan?
+    # Question-by-question right/wrong for the checkpoint result screen (B-f1).
+    # Shape agreed with B: {question_id, submitted, correct_choice, is_correct}.
+    per_question: list[PerQuestionResult] = Field(default_factory=list)
 
 
 # ===========================================================================
