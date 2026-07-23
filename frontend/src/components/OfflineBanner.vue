@@ -4,7 +4,7 @@ defineEmits(['retry'])
 </script>
 
 <template>
-  <div v-if="error" class="card offline-banner" style="padding:14px 16px;border-color:#f0cfc6;background:#fdf1ee;margin-bottom:16px;">
+  <div v-if="error" class="card offline-banner" style="padding:14px 16px;border-color:var(--danger-soft);background:var(--danger-soft);margin-bottom:16px;">
     <div class="row" style="gap:10px;">
       <span style="font-size:20px;">⚠️</span>
       <div class="col" style="gap:2px;">

@@ -265,7 +265,7 @@ onUnmounted(() => clearInterval(pollTimer))
       </template>
     </div>
 
-    <div v-if="error" class="card" style="padding:10px 14px;color:var(--danger);border-color:#f0cfc6;background:#fdf1ee;margin-bottom:16px;">{{ error }}</div>
+    <div v-if="error" class="card" style="padding:10px 14px;color:var(--danger);border-color:var(--danger-soft);background:var(--danger-soft);margin-bottom:16px;">{{ error }}</div>
 
     <!-- ============ Screen 1: goal ============ -->
     <section v-if="step === 1" class="card" style="padding:22px;">
@@ -442,7 +442,7 @@ onUnmounted(() => clearInterval(pollTimer))
 
       <!-- failure state: plan gen errored and we have no plan -->
       <div v-else-if="error && !plan" class="card"
-           style="margin-top:14px;padding:16px;border-color:#f0cfc6;background:#fdf1ee;">
+           style="margin-top:14px;padding:16px;border-color:var(--danger-soft);background:var(--danger-soft);">
         <strong style="color:var(--danger);">{{ $t('onboarding.roadmapFailedTitle') }}</strong>
         <p class="muted" style="margin:8px 0 12px;">{{ friendlyPlanError }}</p>
         <button class="primary" @click="generatePlan()">{{ $t('onboarding.retry') }}</button>
@@ -450,7 +450,7 @@ onUnmounted(() => clearInterval(pollTimer))
 
       <!-- success state -->
       <div v-else-if="plan && plan.tasks">
-        <div v-if="diagResult" class="card" style="padding:10px 14px;background:var(--user-soft);border-color:#cfe9dd;margin-bottom:14px;">
+        <div v-if="diagResult" class="card" style="padding:10px 14px;background:var(--user-soft);border-color:var(--user);margin-bottom:14px;">
           <strong>{{ $t('onboarding.weakConcepts') }}</strong>
           <span v-for="c in concepts.filter(c => scorePct(c.id) !== null && scorePct(c.id) < 60)" :key="c.id" style="margin-left:6px;">
             <ConceptTag :term="c.canonical_term" />

@@ -1,26 +1,32 @@
 :root {
-  /* Calm, readable palette. Monolingual UI chrome (English) per D19. */
-  --bg: #f7f8fa;
+  /* Tangerine theme: white + orange only. Semantic roles (agent/user/warn/
+     danger) are differentiated by weight/tint of the same orange, plus a
+     neutral gray for "muted"/inactive states, rather than by hue, so the
+     2-color constraint holds everywhere badges/charts used to rely on
+     distinct hues. */
+  --bg: #fffaf5;
   --surface: #ffffff;
-  --surface-2: #f1f3f6;
-  --border: #e2e6ec;
-  --text: #1b2430;
-  --text-muted: #6b7785;
-  --text-faint: #97a1ad;
-  --brand: #3b6fb0;
-  --brand-soft: #e8f0fa;
-  --accent: #7c5cbf;
-  --agent: #c0563b;       /* plan/decision authored by the agent */
-  --agent-soft: #fbeae4;
-  --user: #2f8f6b;        /* authored by the user */
-  --user-soft: #e6f4ee;
-  --warn: #b5852b;
-  --warn-soft: #fbf3e0;
-  --ok: #2f8f6b;
-  --danger: #c0563b;
-  --shadow: 0 1px 2px rgba(20,30,45,.06), 0 4px 14px rgba(20,30,45,.05);
-  --radius: 12px;
-  --radius-sm: 8px;
+  --surface-2: #fff1e2;
+  --border: #ffe0bd;
+  --text: #241a10;
+  --text-muted: #8a715a;
+  --text-faint: #c9ac8a;
+  --brand: #ff8100;
+  --brand-soft: #ffedd6;
+  --brand-dark: #cc6700;
+  --accent: #ff8100;
+  --agent: #cc6700;        /* plan/decision authored by the agent — darker tangerine */
+  --agent-soft: #ffe6c2;
+  --user: #ff8100;         /* authored by the user — primary tangerine */
+  --user-soft: #ffedd6;
+  --warn: #b56a00;
+  --warn-soft: #fff0da;
+  --ok: #ff8100;
+  --danger: #a34700;
+  --danger-soft: #ffe3cc;
+  --shadow: 0 1px 2px rgba(150,80,0,.06), 0 4px 14px rgba(150,80,0,.08);
+  --radius: 14px;
+  --radius-sm: 9px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue",
           "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
   --mono: "SFMono-Regular", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
@@ -62,7 +68,7 @@ button.primary {
   color: #fff;
   font-weight: 600;
 }
-button.primary:hover { background: #345f97; }
+button.primary:hover { background: var(--brand-dark); }
 
 button.ghost { background: transparent; border-color: transparent; color: var(--brand); }
 button.ghost:hover { background: var(--brand-soft); }
@@ -107,8 +113,8 @@ a:hover { text-decoration: underline; }
   padding: 2px 9px;
   border-radius: 999px;
   background: var(--brand-soft);
-  color: var(--brand);
-  border: 1px solid #d3e2f4;
+  color: var(--brand-dark);
+  border: 1px solid #ffd7a3;
   white-space: nowrap;
 }
 .concept-tag .dot {
@@ -146,23 +152,61 @@ h3 { font-size: 15px; }
 /* Layout */
 .app-shell { display: flex; min-height: 100%; }
 .sidebar {
-  width: 220px; min-height: 100vh;
+  width: 232px; min-height: 100vh;
   background: var(--surface);
   border-right: 1px solid var(--border);
-  padding: 18px 14px;
+  padding: 20px 14px;
   position: sticky; top: 0;
   display: flex; flex-direction: column; gap: 4px;
 }
-.sidebar .brand { font-size: 18px; font-weight: 750; letter-spacing: -.02em; margin-bottom: 6px; }
+.sidebar .brand {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 18px; font-weight: 750; letter-spacing: -.02em; margin-bottom: 14px;
+}
+.sidebar .brand-logo { width: 30px; height: 30px; flex: none; }
+.sidebar .brand-text { display: flex; flex-direction: column; }
 .sidebar .brand small { display: block; font-size: 11px; font-weight: 500; color: var(--text-faint); letter-spacing: 0; }
 .nav-item {
   display: flex; align-items: center; gap: 9px;
-  padding: 9px 11px; border-radius: var(--radius-sm);
+  padding: 10px 12px; border-radius: 10px;
   color: var(--text-muted); font-weight: 600; font-size: 13.5px;
+  transition: background .15s, color .15s;
 }
 .nav-item:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
-.nav-item.active { background: var(--brand-soft); color: var(--brand); }
+.nav-item.active { background: var(--brand); color: #fff; box-shadow: var(--shadow); }
 .nav-item .ico { width: 18px; text-align: center; }
+
+/* Toggle switch — used for the EN/中文 language control and other binary
+   on/off choices, in place of two separate buttons. */
+.switch {
+  position: relative;
+  display: inline-flex;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px;
+  cursor: pointer;
+  gap: 2px;
+}
+.switch .switch-option {
+  position: relative;
+  z-index: 1;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  color: var(--text-muted);
+  transition: color .15s;
+}
+.switch .switch-option.active { color: #fff; }
+.switch .switch-thumb {
+  position: absolute;
+  top: 2px; bottom: 2px; left: 2px;
+  width: calc(50% - 2px);
+  border-radius: 999px;
+  background: var(--brand);
+  transition: transform .18s ease;
+}
 
 .content { flex: 1; min-width: 0; }
 .page { max-width: 1000px; margin: 0 auto; padding: 28px 32px 64px; }
