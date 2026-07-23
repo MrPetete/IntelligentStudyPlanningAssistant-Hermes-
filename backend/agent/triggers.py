@@ -53,11 +53,24 @@ def evaluate_triggers(
             {"events": len(recent_evidence), "required": TRIGGERS["min_evidence_events"]},
         )
 
-    # 1) Behind schedule?
-    tasks_due = progress.get("tasks_due", 0) or 0
-    tasks_incomplete = progress.get("tasks_incomplete", 0) or 0
-    if tasks_due > 0:
-        behind_pct = tasks_incomplete / tasks_due
+    # 1) Behind schedule? Prefer the schedule-aware OVERDUE signal (tasks that
+    # should be done BY TODAY but aren't) when the caller supplies it; fall back
+    # to the legacy total-incomplete ratio for pure/older callers that don't.
+    #
+    # This refinement is what makes ahead_schedule (below) reachable at all: with
+    # the old total-based ratio, any not-yet-due future task counts as "behind",
+    # so a learner who is genuinely ahead (pending work is all in the future)
+    # would perpetually trip behind_schedule. Basing "behind" on overdue-only
+    # work also stops a brand-new, future-loaded plan from reading as behind on
+    # day one — a reduction in firing, consistent with the R2-02 cooldown intent.
+    if "tasks_due_by_today" in progress:
+        due_ref = progress.get("tasks_due_by_today", 0) or 0
+        incomplete_ref = progress.get("tasks_incomplete_due", 0) or 0
+    else:
+        due_ref = progress.get("tasks_due", 0) or 0
+        incomplete_ref = progress.get("tasks_incomplete", 0) or 0
+    if due_ref > 0:
+        behind_pct = incomplete_ref / due_ref
         if behind_pct > TRIGGERS["behind_schedule_pct"]:
             return TriggerResult(
                 True,
@@ -85,5 +98,27 @@ def evaluate_triggers(
                     {"score": score, "threshold": TRIGGERS["quiz_fail_threshold"],
                      "concept_id": ev.get("concept_id")},
                 )
+
+    # 4) Ahead of schedule? (B-f3 — the trigger half of parked F-1)
+    # Fires when the learner has pulled a meaningful share of NOT-YET-DUE tasks
+    # forward AND is not behind on anything already due — i.e. finishing early
+    # with slack before the deadline, so the agent can consider pulling work
+    # forward proportionately. The schedule-aware keys are additive: a progress
+    # dict without them (older callers, or pure unit inputs) simply can't trip
+    # this, so no existing behaviour changes. The min-evidence guard above and
+    # the replan cooldown (in agent/replan.py) bound how often it can fire.
+    tasks_future = progress.get("tasks_future", 0) or 0
+    tasks_done_ahead = progress.get("tasks_done_ahead", 0) or 0
+    tasks_incomplete_due = progress.get("tasks_incomplete_due", 0) or 0
+    if tasks_future > 0 and tasks_incomplete_due == 0 and tasks_done_ahead > 0:
+        ahead_pct = tasks_done_ahead / tasks_future
+        if ahead_pct > TRIGGERS["ahead_schedule_pct"]:
+            return TriggerResult(
+                True,
+                "ahead_schedule",
+                {"ahead_pct": round(ahead_pct, 3),
+                 "threshold": TRIGGERS["ahead_schedule_pct"],
+                 "tasks_done_ahead": tasks_done_ahead, "tasks_future": tasks_future},
+            )
 
     return TriggerResult(False, "no_trigger", {})

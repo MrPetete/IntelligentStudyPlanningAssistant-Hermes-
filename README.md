@@ -32,8 +32,10 @@ TraceLearn/
 │   ├── routers/        REST endpoints
 │   ├── seed/           seed.py / simulate.py — demo loop without live LLM or HTTP
 │   └── tests/          unit tests for triggers.py / validator.py (pure, no DB/LLM)
-├── frontend/           Vue 3 scaffold notes + API contract (Member B)
+├── frontend/           Vue 3 + Vite + ECharts app (Member B)
 ├── data/               reserved for future material/sample datasets
+├── docker-compose.yml  run backend + frontend together
+├── .env                LMU AI key and config (git-ignored — see .env.example)
 └── .gitignore
 ```
 
@@ -56,6 +58,23 @@ python -m seed.simulate 1                 # inject failure -> Agent -> V2
 are needed for any of this. See `backend/README_BACKEND_SEED.md` for the full
 file-by-file breakdown of what's implemented vs. stubbed vs. deliberately not
 built.
+
+## Running with Docker (backend + frontend together)
+
+```bash
+# 1. Copy the env example and fill in your LMU AI key
+cp .env.example .env
+# Edit .env with your LMU_AI_KEY and other config
+
+# 2. Start both services
+docker compose up --build
+
+# Backend:  http://127.0.0.1:8000/health, /docs
+# Frontend: http://127.0.0.1:5173/
+```
+
+To run the frontend against the mock (offline demo), set `VITE_USE_REAL=false`
+in your `.env` or create `frontend/.env` with that value.
 
 ## What must never change without team discussion
 

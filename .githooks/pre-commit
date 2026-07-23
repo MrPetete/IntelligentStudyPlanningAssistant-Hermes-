@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# TraceLearn pre-commit guard — blocks a commit that would leak the LMU key
+# or commit a real .env. Enable once per clone:
+#     git config core.hooksPath .githooks
+#
+# Bypass in a genuine emergency (NOT for the key): git commit --no-verify
+set -euo pipefail
+
+fail() { echo "BLOCKED (pre-commit): $1" >&2; exit 1; }
+
+# 1. Never allow a real .env (any path) to be committed. .env.example is fine.
+staged=$(git diff --cached --name-only)
+while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  base=$(basename "$f")
+  case "$base" in
+    .env|.env.*)
+      [ "$base" = ".env.example" ] && continue
+      fail "$f is a real env file. Keep secrets local; only .env.example is tracked."
+      ;;
+  esac
+done <<< "$staged"
+
+# 2. Scan staged CONTENT for a live Anthropic/LMU key assignment.
+#    Matches an assignment whose value is NOT a placeholder (< > or the word
+#    'paste'), so .env.example's <paste-key...> passes but a real key fails.
+#    Excludes CODE that only READS the env var (os.getenv / os.environ) and
+#    empty-string defaults, so config.py's `os.getenv("ANTHROPIC_API_KEY", "")`
+#    is not mistaken for a leaked literal.
+# The `['\"]?[A-Za-z0-9]` after the operator requires a real value to follow,
+# so a Python conditional like `if not ANTHROPIC_API_KEY:` (colon, no value)
+# is not treated as an assignment.
+if git diff --cached -U0 | grep -nE "^\+.*(ANTHROPIC_API_KEY|ANTHROPIC_TOKEN)[[:space:]]*[:=][[:space:]]*['\"]?[A-Za-z0-9]" \
+   | grep -vE '<[^>]*>|paste|example|your-key|xxxxx|getenv|environ' >/dev/null 2>&1; then
+  fail "a staged line assigns a real ANTHROPIC_API_KEY. Remove it — the key belongs only in a git-ignored .env."
+fi
+
+# 3. Catch the raw sk- key pattern anywhere in staged content, just in case.
+if git diff --cached -U0 | grep -nE '^\+.*sk-[A-Za-z0-9_-]{20,}' >/dev/null 2>&1; then
+  fail "a staged line contains something shaped like an API key (sk-...). Remove it."
+fi
+
+exit 0

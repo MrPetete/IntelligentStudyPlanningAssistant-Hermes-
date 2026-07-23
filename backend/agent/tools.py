@@ -19,11 +19,13 @@ into the tool trace.
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from sqlmodel import Session, select
 
 import models
+from agent.planmerge import merge_tasks as _merge_tasks_impl
 
 
 # ===========================================================================
@@ -43,7 +45,7 @@ def get_learner_state(session: Session, goal_id: int) -> dict[str, Any]:
     return {
         "goal_text": goal.goal_text,
         "deadline": goal.deadline,
-        "weekly_hours": goal.weekly_hours,
+        "hours_per_day": goal.hours_per_day,
         "explanation_language": goal.explanation_language,
         "concepts": [
             {
@@ -70,7 +72,8 @@ def get_current_plan(session: Session, goal_id: int) -> dict[str, Any]:
         "version_no": pv.version_no,
         "tasks": [
             {"id": t.id, "concept_id": t.concept_id, "day": t.day,
-             "description": t.description, "status": t.status}
+             "description": t.description, "status": t.status,
+             "est_minutes": t.est_minutes}
             for t in tasks
         ],
     }
@@ -80,20 +83,33 @@ def get_progress_summary(session: Session, goal_id: int) -> dict[str, Any]:
     """Aggregate progress against the current plan."""
     pv = _latest_plan_version(session, goal_id)
     if not pv:
-        return {"tasks_total": 0, "tasks_done": 0, "tasks_due": 0, "tasks_incomplete": 0}
+        return {"tasks_total": 0, "tasks_done": 0, "tasks_due": 0, "tasks_incomplete": 0,
+                "tasks_due_by_today": 0, "tasks_incomplete_due": 0,
+                "tasks_future": 0, "tasks_done_ahead": 0}
     tasks = session.exec(
         select(models.Task).where(models.Task.plan_version_id == pv.id)
     ).all()
     total = len(tasks)
     done = sum(1 for t in tasks if t.status == "done")
-    # For the seed, "due" == all tasks; scheduling-aware "due" is a later refinement.
+    # Legacy keys: "due" == all tasks (behind_schedule uses this ratio — unchanged).
     due = total
     incomplete = sum(1 for t in tasks if t.status != "done")
+
+    # Schedule-aware keys (additive) — power the ahead_schedule trigger (B-f3).
+    # A task with no day is treated as due (unscheduled = owed now). "future" =
+    # scheduled strictly after today; "done_ahead" = future work already done.
+    today = date.today().isoformat()
+    due_by_today = [t for t in tasks if t.day is None or t.day <= today]
+    future = [t for t in tasks if t.day is not None and t.day > today]
     return {
         "tasks_total": total,
         "tasks_done": done,
         "tasks_due": due,
         "tasks_incomplete": incomplete,
+        "tasks_due_by_today": len(due_by_today),
+        "tasks_incomplete_due": sum(1 for t in due_by_today if t.status != "done"),
+        "tasks_future": len(future),
+        "tasks_done_ahead": sum(1 for t in future if t.status == "done"),
     }
 
 
@@ -135,17 +151,38 @@ def create_plan_version(
     """
     Create a NEW immutable plan version + its tasks, linked to the current version.
 
-    APPEND-ONLY: never mutates an existing version. The orchestrator MUST have
-    validated `plan` before calling this. Tasks are expected to carry resolved
-    concept_id values (the orchestrator resolves canonical_term -> concept_id).
+    FULL MERGE (team decision — see 06 D11 / MEMBER_A_V1_TASKLIST §3):
+      The new version's task set is the PARENT version's tasks *carried forward*
+      (with their original status / completed_at preserved) PLUS the `plan`
+      tasks appended as NEW work (`pending`). `plan` is therefore a DELTA — only
+      the tasks to add — which keeps `llm_client.decide_replan` delta-only.
+
+      When there is no parent (plan version 1: seed / user generate), the merge
+      is a no-op and the version is exactly `plan`.
+
+    APPEND-ONLY (D11): never mutates an existing version or its tasks. Carried-
+    forward tasks are written as brand-new rows under the new version_no; the
+    parent version's rows are left untouched.
+
+    Validation note: the orchestrator validates the DELTA (`plan`) before calling
+    this. Carried-forward tasks are immutable history — already validated when
+    first created — so they are NOT re-validated here (a completed/past task must
+    not fail today's date/load rules). Consequently completed & past tasks do not
+    count against future weekly capacity (Rule 1). See docstring of _merge_tasks.
+
+    Tasks are expected to carry resolved concept_id values (the orchestrator
+    resolves canonical_term -> concept_id before calling).
     """
     prev = _latest_plan_version(session, goal_id)
     next_no = (prev.version_no + 1) if prev else 1
 
+    carried = _parent_tasks_as_dicts(session, prev) if prev else []
+    merged = _merge_tasks(carried, plan.get("tasks", []))
+
     pv = models.PlanVersion(
         goal_id=goal_id,
         version_no=next_no,
-        plan_json=_dumps({"tasks": plan.get("tasks", [])}),
+        plan_json=_dumps({"tasks": merged}),
         created_by=created_by,
         parent_version_id=prev.id if prev else None,
     )
@@ -153,7 +190,7 @@ def create_plan_version(
     session.commit()
     session.refresh(pv)
 
-    for t in plan.get("tasks", []):
+    for t in merged:
         session.add(
             models.Task(
                 plan_version_id=pv.id,
@@ -161,7 +198,8 @@ def create_plan_version(
                 day=t.get("day"),
                 description=t.get("description", ""),
                 est_minutes=t.get("est_minutes"),
-                status="pending",
+                status=t.get("status", "pending"),
+                completed_at=t.get("completed_at"),
             )
         )
     session.commit()
@@ -200,6 +238,29 @@ def record_agent_decision(
 # ===========================================================================
 # internal helpers (not tools)
 # ===========================================================================
+def _parent_tasks_as_dicts(session: Session, pv: models.PlanVersion) -> list[dict[str, Any]]:
+    """Read the parent version's task rows as plain dicts for carry-forward."""
+    rows = session.exec(
+        select(models.Task).where(models.Task.plan_version_id == pv.id)
+    ).all()
+    return [
+        {
+            "concept_id": t.concept_id,
+            "day": t.day,
+            "description": t.description,
+            "est_minutes": t.est_minutes,
+            "status": t.status,
+            "completed_at": t.completed_at,
+        }
+        for t in rows
+    ]
+
+
+# Full-merge logic lives in the ORM-free agent.planmerge module so it can be
+# unit-tested offline. `_merge_tasks` is kept as a thin local alias.
+_merge_tasks = _merge_tasks_impl
+
+
 def _latest_plan_version(session: Session, goal_id: int) -> models.PlanVersion | None:
     return session.exec(
         select(models.PlanVersion)
@@ -217,8 +278,14 @@ def _mastery_by_concept(session: Session, goal_id: int) -> dict[int, float]:
     weighted update is a later refinement.
     """
     mastery: dict[int, float] = {}
+    # Explicit ordering: the update is order-sensitive (quiz_result sets an
+    # absolute value; task_done/task_skipped are relative deltas), so evidence
+    # must be processed in creation order. Order by id (monotonic with insert)
+    # rather than relying on the engine's default row order.
     rows = session.exec(
-        select(models.Evidence).where(models.Evidence.goal_id == goal_id)
+        select(models.Evidence)
+        .where(models.Evidence.goal_id == goal_id)
+        .order_by(models.Evidence.id)
     ).all()
     for e in rows:
         if e.concept_id is None:

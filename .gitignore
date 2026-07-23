@@ -9,6 +9,7 @@ venv/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Database
 *.db
@@ -25,3 +26,11 @@ dist/
 
 # Logs
 *.log
+logs/
+*.log.[0-9]*
+
+# Local DB repro/backup artifacts
+*.db.*.bak
+
+# Uploaded documents (runtime test data, not source)
+backend/uploads/
