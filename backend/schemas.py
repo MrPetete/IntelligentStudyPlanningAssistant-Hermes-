@@ -22,7 +22,7 @@ Language = Literal["en", "zh"]
 class GoalCreate(BaseModel):
     goal_text: str
     deadline: str                       # ISO date
-    weekly_hours: float
+    hours_per_day: float                # study hours committed per day
     explanation_language: Language = "en"
 
 
@@ -30,7 +30,7 @@ class GoalOut(BaseModel):
     id: int
     goal_text: str
     deadline: str
-    weekly_hours: float
+    hours_per_day: float
     explanation_language: Language
     document_status: str = "none"       # convenience mirror of the document state
     created_at: str
@@ -38,6 +38,17 @@ class GoalOut(BaseModel):
 
 class LanguageUpdate(BaseModel):
     explanation_language: Language
+
+
+class GoalListItem(BaseModel):
+    """Lightweight row for the multi-goal switcher (GET /goals). A-RC2-6."""
+    id: int
+    goal_text: str
+    deadline: str
+    hours_per_day: float
+    explanation_language: Language
+    document_status: str = "none"
+    created_at: str
 
 
 # ===========================================================================
@@ -103,8 +114,58 @@ class DiagnosticSubmit(BaseModel):
     answers: list[DiagnosticAnswer]
 
 
+class PerQuestionResult(BaseModel):
+    """Question-by-question right/wrong for the result screen (B-f1). Safe to
+    reveal the correct option now — the quiz is over. `correct_choice` is the
+    resolved option TEXT (not the stored letter); `submitted` is what the learner
+    picked (None if unanswered)."""
+    question_id: int
+    submitted: str | None = None
+    correct_choice: str | None = None
+    is_correct: bool = False
+
+
 class DiagnosticResult(BaseModel):
     per_concept_score: dict[int, float]  # {concept_id: 0..1} — heuristic signal, not a measurement
+    # Onboarding isn't a graded re-test, but we return the same per-question
+    # detail for UI consistency (B-f1, "worth deciding" note). Optional — an
+    # onboarding screen may ignore it.
+    per_question: list[PerQuestionResult] = Field(default_factory=list)
+
+
+# ===========================================================================
+# Checkpoint re-quiz (A-RC2-4) — mid-plan re-test scoped to specific concepts.
+# Reuses the diagnostic question/scoring shapes; writes quiz_result evidence per
+# concept so mastery can actually move and the trigger gate sees real re-test
+# signal (not just raw task completions).
+# ===========================================================================
+class CheckpointGenerate(BaseModel):
+    """Generate a checkpoint quiz scoped to a concept subset. Empty/omitted
+    concept_ids => all confirmed concepts (a full re-test). `day` is an optional
+    convenience for the frontend's end-of-day quiz (scopes to that day's tasks'
+    concepts when concept_ids is not given)."""
+    concept_ids: list[int] = Field(default_factory=list)
+    day: str | None = None
+    num_questions: int | None = None     # default: config.DIAGNOSTIC_NUM_QUESTIONS
+
+
+class CheckpointOut(BaseModel):
+    checkpoint_id: int                   # a Diagnostic row id (reused table)
+    concept_ids: list[int]               # the concepts this quiz actually covers
+    questions: list[DiagnosticQuestion]
+
+
+class CheckpointSubmit(BaseModel):
+    checkpoint_id: int                   # which checkpoint quiz these answers are for
+    answers: list[DiagnosticAnswer]
+
+
+class CheckpointResult(BaseModel):
+    per_concept_score: dict[int, float]  # {concept_id: 0..1}
+    trigger_fired: bool = False          # did the re-test signal queue a replan?
+    # Question-by-question right/wrong for the checkpoint result screen (B-f1).
+    # Shape agreed with B: {question_id, submitted, correct_choice, is_correct}.
+    per_question: list[PerQuestionResult] = Field(default_factory=list)
 
 
 # ===========================================================================
@@ -127,6 +188,10 @@ class PlanVersionOut(BaseModel):
     parent_version_id: int | None = None
     created_at: str
     tasks: list[TaskOut] = Field(default_factory=list)
+    # Honest feasibility note when a tight deadline forced a trimmed core plan
+    # (e.g. "Tight deadline: core 6 of 20 concepts covered; rest deferred.").
+    # None when the plan covers every confirmed concept.
+    coverage_note: str | None = None
 
 
 class PlanVersionSummary(BaseModel):
@@ -160,7 +225,15 @@ class EvidenceCreate(BaseModel):
 class TaskCompleteOut(BaseModel):
     task_id: int
     status: str
-    trigger_fired: bool                  # did completing this fire a replan trigger?
+    # A replan trigger fired and was QUEUED (background), not necessarily finished.
+    # The frontend polls GET /goals/{id}/decisions for the resulting new version.
+    trigger_fired: bool
+
+
+class TaskUncompleteOut(BaseModel):
+    task_id: int
+    status: str                          # 'pending' after a successful uncheck
+    evidence_removed: int = 0            # task_done evidence rows invalidated
 
 
 class SimulateRequest(BaseModel):

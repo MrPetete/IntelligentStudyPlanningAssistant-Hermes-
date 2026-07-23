@@ -230,7 +230,7 @@ def test_mock_decide_replan_dates_are_relative_and_valid_today():
     for t in plan["tasks"]:
         t["concept_id"] = 1  # normally resolved by the orchestrator
     result = validate_plan(
-        plan=plan, weekly_hours=6.0, deadline="2026-08-10",
+        plan=plan, hours_per_day=6.0, deadline="2026-08-10",
         today=date.today().isoformat(), valid_concept_ids={1}, weak_concept_ids={1},
     )
     assert result.ok, f"mock replan dates rejected by validator: {result.errors}"
@@ -246,7 +246,75 @@ def test_mock_plan_dates_valid_for_more_than_nine_concepts():
         assert len(d) == 10 and d[4] == "-" and d[7] == "-", f"malformed date: {d}"
 
 
+# ---------------------------------------------------------------------------
+# A-V2-3 / A-V2-4: decide_replan user-prompt builder (weak-concept prioritization
+# + ahead-of-schedule slack context). Pure string building — no network.
+# ---------------------------------------------------------------------------
+def _replan_prompt_inputs(*, mastery, evidence, deadline="2026-08-10"):
+    learner_state = {
+        "goal_text": "pass databases",
+        "deadline": deadline,
+        "hours_per_day": 4.0,
+        "concepts": [
+            {"concept_id": 1, "canonical_term": "Normalization",
+             "mastery": mastery, "confirmed": True},
+            {"concept_id": 2, "canonical_term": "Indexing",
+             "mastery": 0.9, "confirmed": True},
+        ],
+    }
+    current_plan = {
+        "version_no": 1,
+        "tasks": [
+            {"concept_id": 1, "canonical_term": "Normalization", "day": "2026-08-01",
+             "description": "study normalization", "status": "pending", "est_minutes": 60},
+        ],
+    }
+    progress = {"tasks_total": 1, "tasks_done": 0}
+    return learner_state, progress, evidence, current_plan
+
+
+def test_replan_prompt_names_weak_concept_from_low_mastery():
+    """B-f2: a low-mastery concept must appear in an explicit prioritize line."""
+    ls, pr, ev, cp = _replan_prompt_inputs(mastery=0.2, evidence=[])
+    prompt = lc._decide_replan_user_prompt(ls, pr, ev, cp)
+    assert "weakest on: Normalization" in prompt
+    assert "Prioritize remediation" in prompt
+    # A healthy concept must NOT be listed as weak.
+    assert "weakest on: Normalization, Indexing" not in prompt
+
+
+def test_replan_prompt_names_weak_concept_from_failed_quiz():
+    """B-f2: a failing quiz_result concept is weak even if mastery looks ok."""
+    ev = [{"type": "quiz_result", "concept_id": 1, "payload": {"score": 0.2}}]
+    ls, pr, ev, cp = _replan_prompt_inputs(mastery=0.9, evidence=ev)
+    prompt = lc._decide_replan_user_prompt(ls, pr, ev, cp)
+    assert "weakest on: Normalization" in prompt
+
+
+def test_replan_prompt_no_weak_concept_states_none():
+    """No weak concept -> honest 'nothing to prioritize' line, not a stray term."""
+    ls, pr, ev, cp = _replan_prompt_inputs(mastery=0.9, evidence=[])
+    prompt = lc._decide_replan_user_prompt(ls, pr, ev, cp)
+    assert "no specific weak concept to prioritize" in prompt
+
+
+def test_replan_prompt_includes_slack_and_unscheduled_concepts():
+    """B-f3: the prompt surfaces remaining slack minutes + not-yet-scheduled
+    concepts so the model can size pulled-forward work proportionately."""
+    ls, pr, ev, cp = _replan_prompt_inputs(mastery=0.9, evidence=[])
+    prompt = lc._decide_replan_user_prompt(ls, pr, ev, cp)
+    assert "Scheduling budget:" in prompt
+    assert "minute(s) of study time remain" in prompt
+    # Indexing (concept 2) is confirmed but not in the plan -> listed unscheduled.
+    assert "Not-yet-scheduled concept(s): Indexing" in prompt
+    assert "PROPORTIONATE" in prompt
+
+
 ALL_TESTS = [
+    test_replan_prompt_names_weak_concept_from_low_mastery,
+    test_replan_prompt_names_weak_concept_from_failed_quiz,
+    test_replan_prompt_no_weak_concept_states_none,
+    test_replan_prompt_includes_slack_and_unscheduled_concepts,
     test_loads_json_loose_strips_markdown_fence,
     test_loads_json_loose_plain_json,
     test_parse_concepts_response_happy_path,

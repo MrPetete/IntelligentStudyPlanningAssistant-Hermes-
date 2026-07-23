@@ -72,7 +72,7 @@ def test_live_generate_plan_shape():
         {"id": 2, "canonical_term": "Indexing", "order_index": 2},
     ]
     out = llm_client.generate_plan(
-        goal={"deadline": "2026-08-10", "weekly_hours": 6},
+        goal={"deadline": "2026-08-10", "hours_per_day": 6},
         concepts=concepts, scores={1: 0.3, 2: 0.8}, explanation_language="en",
     )
     assert isinstance(out, dict) and out.get("tasks"), "expected a plan with tasks"
@@ -88,7 +88,7 @@ def test_live_decide_replan_shape():
         return
     learner_state = {
         "goal_text": "pass databases final", "deadline": "2026-08-10",
-        "days_remaining": 20, "weekly_hours": 6, "explanation_language": "en",
+        "days_remaining": 20, "hours_per_day": 6, "explanation_language": "en",
         "concepts": [
             {"concept_id": 1, "canonical_term": "Normalization", "mastery": 0.2, "confirmed": True},
             {"concept_id": 2, "canonical_term": "Indexing", "mastery": 0.9, "confirmed": True},

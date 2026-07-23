@@ -152,13 +152,13 @@ def run_agent(session: Session, goal_id: int, trigger_reason: str) -> dict[str, 
     weak_ids = weak_ids - parent_covered
     today = date.today().isoformat()
     deadline = learner_state.get("deadline", today)
-    weekly_hours = learner_state.get("weekly_hours", 0.0)
+    hours_per_day = learner_state.get("hours_per_day", 0.0)
 
     result_version_id: int | None = None
     for attempt in range(LLM_MAX_RETRIES + 1):
         vres = validate_plan(
             plan=plan,
-            weekly_hours=weekly_hours,
+            hours_per_day=hours_per_day,
             deadline=deadline,
             today=today,
             valid_concept_ids=valid_ids,

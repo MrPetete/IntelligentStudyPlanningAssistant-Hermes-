@@ -3,6 +3,7 @@ import { ref, onMounted, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import store, { api } from '../store.js'
 import ConceptTag from '../components/ConceptTag.vue'
+import OfflineBanner from '../components/OfflineBanner.vue'
 
 const router = useRouter()
 const loading = ref(false)
@@ -10,9 +11,11 @@ const diff = ref(null)
 const fromNo = ref(null)
 const toNo = ref(null)
 const err = ref('')
+const loadError = ref(null)
 
 async function load() {
   loading.value = true
+  loadError.value = null
   try {
     store.versions = await api.getVersions(store.goalId)
     store.decisions = await api.getDecisions(store.goalId)
@@ -26,6 +29,8 @@ async function load() {
       toNo.value = vs[0].version_no
     }
     await loadDiff()
+  } catch (e) {
+    loadError.value = e
   } finally { loading.value = false }
 }
 
@@ -52,99 +57,103 @@ function decisionForVersion(vid) {
 
 <template>
   <div class="page page-wide">
-    <div class="eyebrow" style="color:var(--agent);">Version History</div>
-    <h1>The trace of your plan</h1>
-    <p class="muted">Every plan change is an immutable new version with an evidence-linked reason. Pick two versions to see what changed.</p>
+    <div class="eyebrow" style="color:var(--agent);">{{ $t('history.eyebrow') }}</div>
+    <h1>{{ $t('history.title') }}</h1>
+    <p class="muted">{{ $t('history.subtitle') }}</p>
 
-    <!-- Timeline -->
-    <div class="timeline card" style="padding:18px 20px;margin:18px 0;">
-      <div class="row" style="gap:0;align-items:stretch;">
-        <div v-for="(v, i) in store.versions" :key="v.id" class="tl-item col" style="flex:1;position:relative;">
-          <div class="tl-node" :class="v.created_by"></div>
-          <div class="tl-card card" :class="{ active: v.version_no === toNo, from: v.version_no === fromNo }"
-               @click="toNo = v.version_no; if (fromNo == null) fromNo = store.versions[Math.max(0,i-1)].version_no; loadDiff()">
-            <div class="row">
-              <strong>v{{ v.version_no }}</strong>
-              <span class="spacer"></span>
-              <span class="badge" :class="v.created_by === 'agent' ? 'agent' : 'user'">
-                {{ v.created_by === 'agent' ? 'TraceLearn agent' : 'you' }}
-              </span>
+    <OfflineBanner :error="loadError" @retry="load" />
+
+    <template v-if="!loadError">
+      <!-- Timeline -->
+      <div class="timeline card" style="padding:18px 20px;margin:18px 0;">
+        <div class="row" style="gap:0;align-items:stretch;">
+          <div v-for="(v, i) in store.versions" :key="v.id" class="tl-item col" style="flex:1;position:relative;">
+            <div class="tl-node" :class="v.created_by"></div>
+            <div class="tl-card card" :class="{ active: v.version_no === toNo, from: v.version_no === fromNo }"
+                 @click="toNo = v.version_no; if (fromNo == null) fromNo = store.versions[Math.max(0,i-1)].version_no; loadDiff()">
+              <div class="row">
+                <strong>v{{ v.version_no }}</strong>
+                <span class="spacer"></span>
+                <span class="badge" :class="v.created_by === 'agent' ? 'agent' : 'user'">
+                  {{ v.created_by === 'agent' ? $t('history.agentName') : $t('history.you') }}
+                </span>
+              </div>
+              <div class="faint" style="font-size:12px;margin-top:4px;">{{ fmtDate(v.created_at) }}</div>
+              <div v-if="v.parent_version_id" class="faint" style="font-size:11px;">{{ $t('history.fromVersion', { n: v.parent_version_id }) }}</div>
+              <div v-if="decisionForVersion(v.id)" class="link" @click.stop="router.push('/decision/' + decisionForVersion(v.id).id)">{{ $t('history.viewDecision') }}</div>
             </div>
-            <div class="faint" style="font-size:12px;margin-top:4px;">{{ fmtDate(v.created_at) }}</div>
-            <div v-if="v.parent_version_id" class="faint" style="font-size:11px;">from v{{ v.parent_version_id }}</div>
-            <div v-if="decisionForVersion(v.id)" class="link" @click.stop="router.push('/decision/' + decisionForVersion(v.id).id)">view decision →</div>
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Diff controls -->
-    <div class="row" style="gap:10px;margin-bottom:14px;">
-      <span class="label">Compare</span>
-      <select v-model.number="fromNo" @change="loadDiff" style="width:auto;">
-        <option v-for="v in store.versions" :key="'f'+v.version_no" :value="v.version_no">v{{ v.version_no }}</option>
-      </select>
-      <span class="muted">→</span>
-      <select v-model.number="toNo" @change="loadDiff" style="width:auto;">
-        <option v-for="v in store.versions" :key="'t'+v.version_no" :value="v.version_no">v{{ v.version_no }}</option>
-      </select>
-      <span class="spacer"></span>
-      <button class="primary" @click="loadDiff">Show diff</button>
-    </div>
-
-    <div v-if="err" class="card" style="padding:10px 14px;color:var(--danger);">{{ err }}</div>
-
-    <!-- Concept summary (the money line) -->
-    <div v-if="diff" class="card" style="padding:18px 20px;margin-bottom:16px;">
-      <div class="eyebrow">What changed, grouped by concept</div>
-      <div v-if="!conceptEntries.length && !diff.added_tasks.length && !diff.removed_tasks.length" class="muted" style="margin-top:8px;">
-        These two versions are identical — {{ diff.unchanged_count }} task(s) unchanged.
-      </div>
-      <div v-else class="stack" style="margin-top:10px;">
-        <div v-for="[term, note] in conceptEntries" :key="term" class="row" style="gap:10px;">
-          <ConceptTag :term="term" />
-          <span class="muted">{{ note }}</span>
-        </div>
-        <div v-if="diff._rescheduled?.length" class="row" style="gap:10px;">
-          <span class="concept-tag" style="background:var(--warn-soft);color:var(--warn);border-color:#ecdcb4;">
-            <span class="dot" style="background:var(--warn)"></span>Rescheduled
-          </span>
-          <span class="muted">{{ diff._rescheduled.length }} task(s) moved to a different day</span>
-        </div>
-        <div class="faint" style="font-size:12px;">{{ diff.unchanged_count }} task(s) unchanged</div>
-      </div>
-    </div>
-
-    <!-- Side-by-side diff -->
-    <div v-if="diff" class="diff-grid">
-      <div class="card" style="padding:16px;">
-        <h3>v{{ diff.from_version }} <span class="faint" style="font-weight:500;">(before)</span></h3>
-        <div v-for="t in diff.removed_tasks" :key="'r'+t.id" class="drow removed">
-          <ConceptTag :term="t.canonical_term" />
-          <span class="strike">{{ t.description }}</span>
-          <span class="faint">{{ t.day }}</span>
-        </div>
-        <div v-if="!diff.removed_tasks.length" class="faint" style="font-size:12px;">No tasks removed.</div>
+      <!-- Diff controls -->
+      <div class="row" style="gap:10px;margin-bottom:14px;">
+        <span class="label">{{ $t('history.compare') }}</span>
+        <select v-model.number="fromNo" @change="loadDiff" style="width:auto;">
+          <option v-for="v in store.versions" :key="'f'+v.version_no" :value="v.version_no">v{{ v.version_no }}</option>
+        </select>
+        <span class="muted">→</span>
+        <select v-model.number="toNo" @change="loadDiff" style="width:auto;">
+          <option v-for="v in store.versions" :key="'t'+v.version_no" :value="v.version_no">v{{ v.version_no }}</option>
+        </select>
+        <span class="spacer"></span>
+        <button class="primary" @click="loadDiff">{{ $t('history.showDiff') }}</button>
       </div>
 
-      <div class="card" style="padding:16px;">
-        <h3>v{{ diff.to_version }} <span class="faint" style="font-weight:500;">(after)</span></h3>
-        <div v-for="t in diff.added_tasks" :key="'a'+t.id" class="drow added">
-          <ConceptTag :term="t.canonical_term" />
-          <span>{{ t.description }}</span>
-          <span class="faint">{{ t.day }}</span>
-        </div>
-        <div v-if="!diff.added_tasks.length" class="faint" style="font-size:12px;">No tasks added.</div>
-      </div>
-    </div>
+      <div v-if="err" class="card" style="padding:10px 14px;color:var(--danger);">{{ err }}</div>
 
-    <!-- Jump to the decision that produced the "to" version -->
-    <div v-if="diff" class="row" style="justify-content:flex-end;margin-top:18px;">
-      <button v-if="decisionForVersion(diff.to_version)" @click="router.push('/decision/' + decisionForVersion(diff.to_version).id)">
-        Why did v{{ diff.to_version }} change? →
-      </button>
-      <span v-else class="faint">v{{ diff.to_version }} was created by you (no agent decision).</span>
-    </div>
+      <!-- Concept summary (the money line) -->
+      <div v-if="diff" class="card" style="padding:18px 20px;margin-bottom:16px;">
+        <div class="eyebrow">{{ $t('history.whatChanged') }}</div>
+        <div v-if="!conceptEntries.length && !diff.added_tasks.length && !diff.removed_tasks.length" class="muted" style="margin-top:8px;">
+          {{ $t('history.identical', { n: diff.unchanged_count }) }}
+        </div>
+        <div v-else class="stack" style="margin-top:10px;">
+          <div v-for="[term, note] in conceptEntries" :key="term" class="row" style="gap:10px;">
+            <ConceptTag :term="term" />
+            <span class="muted">{{ note }}</span>
+          </div>
+          <div v-if="diff._rescheduled?.length" class="row" style="gap:10px;">
+            <span class="concept-tag" style="background:var(--warn-soft);color:var(--warn);border-color:#ecdcb4;">
+              <span class="dot" style="background:var(--warn)"></span>{{ $t('history.rescheduled') }}
+            </span>
+            <span class="muted">{{ $t('history.rescheduledCount', { n: diff._rescheduled.length }) }}</span>
+          </div>
+          <div class="faint" style="font-size:12px;">{{ $t('history.unchangedCount', { n: diff.unchanged_count }) }}</div>
+        </div>
+      </div>
+
+      <!-- Side-by-side diff -->
+      <div v-if="diff" class="diff-grid">
+        <div class="card" style="padding:16px;">
+          <h3>v{{ diff.from_version }} <span class="faint" style="font-weight:500;">({{ $t('history.before') }})</span></h3>
+          <div v-for="t in diff.removed_tasks" :key="'r'+t.id" class="drow removed">
+            <ConceptTag :term="t.canonical_term" />
+            <span class="strike">{{ t.description }}</span>
+            <span class="faint">{{ t.day }}</span>
+          </div>
+          <div v-if="!diff.removed_tasks.length" class="faint" style="font-size:12px;">{{ $t('history.noRemoved') }}</div>
+        </div>
+
+        <div class="card" style="padding:16px;">
+          <h3>v{{ diff.to_version }} <span class="faint" style="font-weight:500;">({{ $t('history.after') }})</span></h3>
+          <div v-for="t in diff.added_tasks" :key="'a'+t.id" class="drow added">
+            <ConceptTag :term="t.canonical_term" />
+            <span>{{ t.description }}</span>
+            <span class="faint">{{ t.day }}</span>
+          </div>
+          <div v-if="!diff.added_tasks.length" class="faint" style="font-size:12px;">{{ $t('history.noAdded') }}</div>
+        </div>
+      </div>
+
+      <!-- Jump to the decision that produced the "to" version -->
+      <div v-if="diff" class="row" style="justify-content:flex-end;margin-top:18px;">
+        <button v-if="decisionForVersion(diff.to_version)" @click="router.push('/decision/' + decisionForVersion(diff.to_version).id)">
+          {{ $t('history.whyChanged', { n: diff.to_version }) }}
+        </button>
+        <span v-else class="faint">{{ $t('history.noAgentDecision', { n: diff.to_version }) }}</span>
+      </div>
+    </template>
   </div>
 </template>
 

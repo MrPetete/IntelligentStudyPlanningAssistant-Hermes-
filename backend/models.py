@@ -46,7 +46,7 @@ class Goal(SQLModel, table=True):
     user_id: int = Field(foreign_key="users.id")
     goal_text: str
     deadline: str                       # ISO date, e.g. "2026-08-10"
-    weekly_hours: float
+    hours_per_day: float                # study hours the learner commits per day
     explanation_language: str = "en"    # 'en' | 'zh' — human-facing output language
     created_at: str = Field(default_factory=_utcnow)
 

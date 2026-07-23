@@ -19,6 +19,7 @@ into the tool trace.
 from __future__ import annotations
 
 import json
+from datetime import date
 from typing import Any
 
 from sqlmodel import Session, select
@@ -44,7 +45,7 @@ def get_learner_state(session: Session, goal_id: int) -> dict[str, Any]:
     return {
         "goal_text": goal.goal_text,
         "deadline": goal.deadline,
-        "weekly_hours": goal.weekly_hours,
+        "hours_per_day": goal.hours_per_day,
         "explanation_language": goal.explanation_language,
         "concepts": [
             {
@@ -71,7 +72,8 @@ def get_current_plan(session: Session, goal_id: int) -> dict[str, Any]:
         "version_no": pv.version_no,
         "tasks": [
             {"id": t.id, "concept_id": t.concept_id, "day": t.day,
-             "description": t.description, "status": t.status}
+             "description": t.description, "status": t.status,
+             "est_minutes": t.est_minutes}
             for t in tasks
         ],
     }
@@ -81,20 +83,33 @@ def get_progress_summary(session: Session, goal_id: int) -> dict[str, Any]:
     """Aggregate progress against the current plan."""
     pv = _latest_plan_version(session, goal_id)
     if not pv:
-        return {"tasks_total": 0, "tasks_done": 0, "tasks_due": 0, "tasks_incomplete": 0}
+        return {"tasks_total": 0, "tasks_done": 0, "tasks_due": 0, "tasks_incomplete": 0,
+                "tasks_due_by_today": 0, "tasks_incomplete_due": 0,
+                "tasks_future": 0, "tasks_done_ahead": 0}
     tasks = session.exec(
         select(models.Task).where(models.Task.plan_version_id == pv.id)
     ).all()
     total = len(tasks)
     done = sum(1 for t in tasks if t.status == "done")
-    # For the seed, "due" == all tasks; scheduling-aware "due" is a later refinement.
+    # Legacy keys: "due" == all tasks (behind_schedule uses this ratio — unchanged).
     due = total
     incomplete = sum(1 for t in tasks if t.status != "done")
+
+    # Schedule-aware keys (additive) — power the ahead_schedule trigger (B-f3).
+    # A task with no day is treated as due (unscheduled = owed now). "future" =
+    # scheduled strictly after today; "done_ahead" = future work already done.
+    today = date.today().isoformat()
+    due_by_today = [t for t in tasks if t.day is None or t.day <= today]
+    future = [t for t in tasks if t.day is not None and t.day > today]
     return {
         "tasks_total": total,
         "tasks_done": done,
         "tasks_due": due,
         "tasks_incomplete": incomplete,
+        "tasks_due_by_today": len(due_by_today),
+        "tasks_incomplete_due": sum(1 for t in due_by_today if t.status != "done"),
+        "tasks_future": len(future),
+        "tasks_done_ahead": sum(1 for t in future if t.status == "done"),
     }
 
 

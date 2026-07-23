@@ -16,7 +16,7 @@ export const seedGoal = {
   id: 1,
   goal_text: 'Learn database design for my final exam',
   deadline: '2026-08-15',
-  weekly_hours: 6,
+  hours_per_day: 2,
   explanation_language: 'zh',
   document_status: 'ready',
   created_at: '2026-07-19T09:00:00+00:00'
@@ -222,7 +222,7 @@ export const seedDecisions = [
     reasoning_text:
       '你最近关于 Normalization 的测验得分较低，且多个 Normalization 任务未完成。由于该概念是后续主题的基础，我在继续之前新增了两个 Normalization 巩固任务。',
     tool_trace: [
-      { tool: 'get_learner_state', args: { goal_id: 1 }, result_summary: 'goal_text, deadline, weekly_hours, explanation_language' },
+      { tool: 'get_learner_state', args: { goal_id: 1 }, result_summary: 'goal_text, deadline, hours_per_day, explanation_language' },
       { tool: 'get_progress_summary', args: { goal_id: 1 }, result_summary: 'tasks_total, tasks_done, tasks_due, tasks_incomplete' },
       { tool: 'get_evidence_since_last_plan', args: { goal_id: 1 }, result_summary: '4 items' },
       { tool: 'get_current_plan', args: { goal_id: 1 }, result_summary: 'plan_version_id, version_no, tasks' },

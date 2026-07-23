@@ -23,6 +23,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from agent.planmerge import merge_tasks
 
 
+class _NoopBackground:
+    """Stand-in for FastAPI BackgroundTasks: records scheduled tasks but never
+    runs them (rc2 — complete_task now takes a `background` param for A-RC2-1)."""
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, fn, *args, **kwargs):
+        self.tasks.append((fn, args, kwargs))
+
+
 # ---------------------------------------------------------------------------
 # Tier 1 — PURE merge tests (the heart of A2). Always runnable.
 # ---------------------------------------------------------------------------
@@ -173,7 +183,7 @@ def test_db_replan_appends_new_version_and_preserves_parent():
     _db = _fresh_db("append")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -218,7 +228,7 @@ def test_db_full_merge_carries_completion_state():
     _db = _fresh_db("carry")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -254,7 +264,7 @@ def test_db_validation_failure_records_no_change():
     _db = _fresh_db("nochange")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -293,7 +303,7 @@ def test_db_repeated_trigger_records_no_change_not_duplicate():
     _db = _fresh_db("dedup")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -329,7 +339,7 @@ def test_db_replan_weak_concept_covered_by_parent_not_falsely_rejected():
     _db = _fresh_db("weakcover")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-09-30", weekly_hours=8.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-09-30", hours_per_day=8.0)
         s.add(g); s.commit(); s.refresh(g)
         # Two confirmed concepts; make BOTH weak via low quiz scores.
         ca = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
@@ -376,7 +386,7 @@ def test_db_complete_task_on_superseded_version_rejected():
     _db = _fresh_db("stale")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -392,7 +402,7 @@ def test_db_complete_task_on_superseded_version_rejected():
 
         raised = False
         try:
-            complete_task(v1_task.id, session=s)
+            complete_task(v1_task.id, _NoopBackground(), session=s)
         except HTTPException as e:
             raised = True
             assert e.status_code == 409
@@ -412,7 +422,7 @@ def test_db_complete_task_sets_completed_at():
     _db = _fresh_db("compat")
     with Session(_db.engine) as s:
         s.add(models.User(id=1, name="t")); s.commit()
-        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", weekly_hours=6.0)
+        g = models.Goal(user_id=1, goal_text="g", deadline="2026-08-10", hours_per_day=6.0)
         s.add(g); s.commit(); s.refresh(g)
         c = models.Concept(goal_id=g.id, canonical_term="Normalization", name="N", confirmed=True)
         s.add(c); s.commit(); s.refresh(c)
@@ -421,7 +431,7 @@ def test_db_complete_task_sets_completed_at():
         ]}, created_by="user")
         task = s.exec(select(models.Task).where(
             models.Task.plan_version_id == v1["plan_version_id"])).first()
-        complete_task(task.id, session=s)
+        complete_task(task.id, _NoopBackground(), session=s)
         s.refresh(task)
         assert task.status == "done"
         assert task.completed_at, "completed_at must be stamped on completion"

@@ -1,10 +1,12 @@
 <script setup>
 import { ref, reactive, computed, onUnmounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import store, { api, initGoal } from '../store.js'
+import { useI18n } from 'vue-i18n'
+import store, { api, initGoal, syncLocale } from '../store.js'
 import ConceptTag from '../components/ConceptTag.vue'
 
 const router = useRouter()
+const { t } = useI18n()
 
 // ---- step state ----
 const step = ref(1) // 1 goal, 2 warmup, 3 concepts, 4 diagnostic, 5 reveal
@@ -13,22 +15,35 @@ const error = ref('')
 const docStatus = ref('none') // none | uploaded | processing | ready | failed
 let pollTimer = null
 
-const steps = [
-  { n: 1, title: 'Goal setup' },
-  { n: 2, title: 'Warm-up' },
-  { n: 3, title: 'Confirm concepts' },
-  { n: 4, title: 'Diagnostic' },
-  { n: 5, title: 'Roadmap V1' }
-]
+const steps = computed(() => [
+  { n: 1, title: t('onboarding.steps.goal') },
+  { n: 2, title: t('onboarding.steps.warmup') },
+  { n: 3, title: t('onboarding.steps.concepts') },
+  { n: 4, title: t('onboarding.steps.diagnostic') },
+  { n: 5, title: t('onboarding.steps.reveal') }
+])
 
 // ---- Screen 1: goal ----
 const goalForm = reactive({
   goal_text: '',
   deadline: '',
-  weekly_hours: 6,
+  hours_per_day: 2,
   explanation_language: 'en',
   filename: ''
 })
+// Interface follows the same field the moment it's picked (B-RC2-8: one
+// setting drives both UI chrome and content language, even mid-onboarding).
+watch(() => goalForm.explanation_language, (lang) => syncLocale(lang))
+// Realistic cap: hours left until deadline (same-day = until midnight; future = 16h)
+const maxHoursPerDay = computed(() => {
+  if (!goalForm.deadline) return 16
+  const now = new Date()
+  const dl = new Date(goalForm.deadline + 'T23:59:59')
+  const sameDay = dl.toDateString() === now.toDateString()
+  if (sameDay) return Math.max(1, Math.floor((dl - now) / 3.6e6))
+  return 16
+})
+watch(maxHoursPerDay, (m) => { if (goalForm.hours_per_day > m) goalForm.hours_per_day = m })
 const fileInput = ref(null)
 function onPickFile(e) {
   const f = e.target.files?.[0]
@@ -37,7 +52,7 @@ function onPickFile(e) {
 async function submitGoal() {
   error.value = ''
   if (!goalForm.goal_text.trim() || !goalForm.deadline) {
-    error.value = 'Please enter a goal and a deadline.'
+    error.value = t('onboarding.missingFields')
     return
   }
   busy.value = true
@@ -176,7 +191,7 @@ async function generateDiag() {
 async function submitDiag() {
   error.value = ''
   const unanswered = diag.value.questions.filter((q) => !answers[q.id])
-  if (unanswered.length) { error.value = 'Please answer every question.'; return }
+  if (unanswered.length) { error.value = t('onboarding.answerToContinue'); return }
   busy.value = true
   try {
     const body = diag.value.questions.map((q) => ({ question_id: q.id, choice: answers[q.id] }))
@@ -198,20 +213,31 @@ function scorePct(cid) {
 // ---- Screen 5: roadmap reveal ----
 const plan = ref(null)
 const planGenerating = ref(false)
+const planError = ref(null)
 async function generatePlan() {
   planGenerating.value = true
   error.value = ''
+  planError.value = null
   try {
     const v = await api.generatePlan(store.goalId)
     plan.value = v
     await initGoal(store.goalId) // refresh store so nav shows goal + versions
   } catch (e) {
+    planError.value = e
     error.value = e.message
   } finally {
     planGenerating.value = false
   }
 }
 function goToApp() { router.push('/home') }
+
+const friendlyPlanError = computed(() => {
+  const e = planError.value
+  const code = e?.code, status = e?.status
+  if (code === 'deadline_too_tight') return t('onboarding.errDeadlineTight')
+  if (status === 502) return t('onboarding.errBusy')
+  return t('onboarding.errGeneric')
+})
 
 // enter concept load when arriving at step 3
 watch(step, (s) => {
@@ -225,9 +251,9 @@ onUnmounted(() => clearInterval(pollTimer))
 
 <template>
   <div class="page" style="max-width:760px;">
-    <div class="eyebrow">TraceLearn · Onboarding</div>
-    <h1>Let's build your learning path</h1>
-    <p class="muted">A material-grounded plan that explains every change. Setup takes about 3 minutes.</p>
+    <div class="eyebrow">{{ $t('onboarding.eyebrow') }}</div>
+    <h1>{{ $t('onboarding.title') }}</h1>
+    <p class="muted">{{ $t('onboarding.subtitle') }}</p>
 
     <!-- Stepper -->
     <div class="stepper" style="margin:18px 0 26px;">
@@ -245,21 +271,23 @@ onUnmounted(() => clearInterval(pollTimer))
     <section v-if="step === 1" class="card" style="padding:22px;">
       <div class="stack">
         <div>
-          <div class="label">Your goal</div>
-          <textarea v-model="goalForm.goal_text" rows="2" placeholder="e.g. Learn database design for my final exam"></textarea>
+          <div class="label">{{ $t('onboarding.goalLabel') }}</div>
+          <textarea v-model="goalForm.goal_text" rows="2" :placeholder="$t('onboarding.goalPlaceholder')"></textarea>
         </div>
         <div class="row">
           <div style="flex:1">
-            <div class="label">Deadline</div>
+            <div class="label">{{ $t('onboarding.deadlineLabel') }}</div>
             <input type="date" v-model="goalForm.deadline" />
           </div>
           <div style="flex:1">
-            <div class="label">Weekly study hours</div>
-            <input type="number" min="1" max="60" v-model.number="goalForm.weekly_hours" />
+            <div class="label">{{ $t('onboarding.hoursLabel') }}</div>
+            <select v-model.number="goalForm.hours_per_day">
+              <option v-for="h in maxHoursPerDay" :key="h" :value="h">{{ h }}</option>
+            </select>
           </div>
         </div>
         <div>
-          <div class="label">Explanation language</div>
+          <div class="label">{{ $t('onboarding.languageLabel') }}</div>
           <div class="row" style="gap:10px;margin-top:4px;">
             <label class="row" style="gap:6px;font-weight:500;">
               <input type="radio" style="width:auto" value="en" v-model="goalForm.explanation_language" /> English
@@ -268,49 +296,49 @@ onUnmounted(() => clearInterval(pollTimer))
               <input type="radio" style="width:auto" value="zh" v-model="goalForm.explanation_language" /> 中文
             </label>
           </div>
-          <div class="faint" style="font-size:12px;margin-top:4px;">Sets the language for explanations, tasks, and the agent's reasoning. The interface stays in English.</div>
+          <div class="faint" style="font-size:12px;margin-top:4px;">{{ $t('onboarding.languageHint') }}</div>
         </div>
         <div>
-          <div class="label">Learning material (optional)</div>
+          <div class="label">{{ $t('onboarding.materialLabel') }}</div>
           <div class="drop" @click="fileInput?.click()">
-            <div v-if="!goalForm.filename" class="muted">Drag & drop one PDF / TXT — or click to browse</div>
-            <div v-else><strong>{{ goalForm.filename }}</strong> <span class="faint">(click to replace)</span></div>
+            <div v-if="!goalForm.filename" class="muted">{{ $t('onboarding.dropHint') }}</div>
+            <div v-else><strong>{{ goalForm.filename }}</strong> <span class="faint">{{ $t('onboarding.replaceHint') }}</span></div>
             <input ref="fileInput" type="file" accept=".pdf,.txt" style="display:none" @change="onPickFile" />
           </div>
-          <div class="faint" style="font-size:12px;margin-top:4px;">No material? We'll derive a concept map from your goal. The product still works.</div>
+          <div class="faint" style="font-size:12px;margin-top:4px;">{{ $t('onboarding.noMaterialHint') }}</div>
         </div>
         <div class="row" style="justify-content:flex-end;margin-top:6px;">
-          <button class="primary" :disabled="busy" @click="submitGoal">{{ busy ? 'Starting…' : 'Start →' }}</button>
+          <button class="primary" :disabled="busy" @click="submitGoal">{{ busy ? $t('onboarding.starting') : $t('onboarding.start') }}</button>
         </div>
       </div>
     </section>
 
     <!-- ============ Screen 2: warm-up ============ -->
     <section v-else-if="step === 2" class="card" style="padding:22px;">
-      <h2>Warm-up questions</h2>
-      <p class="muted"><strong>Context only — this is not a test</strong> and does not decide your plan. It just gives the system a soft prior while we work.</p>
+      <h2>{{ $t('onboarding.warmupTitle') }}</h2>
+      <p class="muted"><strong>{{ $t('onboarding.warmupNote') }}</strong></p>
 
       <div class="stack" style="margin-top:10px;">
         <div>
-          <div class="label">Have you studied this topic before?</div>
+          <div class="label">{{ $t('onboarding.studiedQ') }}</div>
           <div class="row" style="gap:8px;margin-top:4px;">
-            <button :class="{ primary: warmup.studied === true }" @click="warmup.studied = true">Yes, some</button>
-            <button :class="{ primary: warmup.studied === false }" @click="warmup.studied = false">No</button>
+            <button :class="{ primary: warmup.studied === true }" @click="warmup.studied = true">{{ $t('onboarding.studiedYes') }}</button>
+            <button :class="{ primary: warmup.studied === false }" @click="warmup.studied = false">{{ $t('onboarding.studiedNo') }}</button>
           </div>
         </div>
         <div>
-          <div class="label">Are you starting from scratch on the material?</div>
+          <div class="label">{{ $t('onboarding.scratchQ') }}</div>
           <div class="row" style="gap:8px;margin-top:4px;">
-            <button :class="{ primary: warmup.fromScratch === true }" @click="warmup.fromScratch = true">From scratch</button>
-            <button :class="{ primary: warmup.fromScratch === false }" @click="warmup.fromScratch = false">I have a base</button>
+            <button :class="{ primary: warmup.fromScratch === true }" @click="warmup.fromScratch = true">{{ $t('onboarding.scratchYes') }}</button>
+            <button :class="{ primary: warmup.fromScratch === false }" @click="warmup.fromScratch = false">{{ $t('onboarding.scratchNo') }}</button>
           </div>
         </div>
         <div>
-          <div class="label">How comfortable do you feel right now?</div>
+          <div class="label">{{ $t('onboarding.comfortQ') }}</div>
           <div class="row" style="gap:8px;margin-top:4px;">
-            <button :class="{ primary: warmup.comfort === 'low' }" @click="warmup.comfort = 'low'">Low</button>
-            <button :class="{ primary: warmup.comfort === 'mid' }" @click="warmup.comfort = 'mid'">Medium</button>
-            <button :class="{ primary: warmup.comfort === 'high' }" @click="warmup.comfort = 'high'">High</button>
+            <button :class="{ primary: warmup.comfort === 'low' }" @click="warmup.comfort = 'low'">{{ $t('onboarding.comfortLow') }}</button>
+            <button :class="{ primary: warmup.comfort === 'mid' }" @click="warmup.comfort = 'mid'">{{ $t('onboarding.comfortMid') }}</button>
+            <button :class="{ primary: warmup.comfort === 'high' }" @click="warmup.comfort = 'high'">{{ $t('onboarding.comfortHigh') }}</button>
           </div>
         </div>
       </div>
@@ -318,19 +346,19 @@ onUnmounted(() => clearInterval(pollTimer))
       <!-- background material indicator -->
       <div v-if="goalForm.filename" class="card" style="margin-top:18px;padding:12px 14px;background:var(--surface-2);">
         <div class="row">
-          <span v-if="docStatus === 'ready'" class="badge ok">✓ Material ready</span>
-          <span v-else-if="docStatus === 'failed'" class="badge warn">Processing failed — using goal topic</span>
-          <span v-else class="badge muted">Analyzing material…</span>
+          <span v-if="docStatus === 'ready'" class="badge ok">{{ $t('onboarding.materialReady') }}</span>
+          <span v-else-if="docStatus === 'failed'" class="badge warn">{{ $t('onboarding.materialFailed') }}</span>
+          <span v-else class="badge muted">{{ $t('onboarding.materialAnalyzing') }}</span>
           <span class="spacer"></span>
-          <span class="faint" v-if="docStatus !== 'ready' && docStatus !== 'failed'">Background analysis in progress</span>
+          <span class="faint" v-if="docStatus !== 'ready' && docStatus !== 'failed'">{{ $t('onboarding.materialBackground') }}</span>
         </div>
         <div v-if="docStatus === 'processing' || docStatus === 'uploaded'" class="bar" style="margin-top:8px;"><span style="width:60%"></span></div>
       </div>
-      <div v-else class="faint" style="margin-top:18px;">No material uploaded — we'll build a goal-based concept map.</div>
+      <div v-else class="faint" style="margin-top:18px;">{{ $t('onboarding.noMaterialUploaded') }}</div>
 
       <div class="row" style="justify-content:flex-end;margin-top:18px;">
         <button class="primary" :disabled="!warmupDone" @click="continueFromWarmup">
-          {{ warmupDone ? 'Continue →' : 'Answer the questions to continue' }}
+          {{ warmupDone ? $t('onboarding.continue') : $t('onboarding.answerToContinue') }}
         </button>
       </div>
     </section>
@@ -338,40 +366,42 @@ onUnmounted(() => clearInterval(pollTimer))
     <!-- ============ Screen 3: concept confirmation ============ -->
     <section v-else-if="step === 3" class="card" style="padding:22px;">
       <div class="row">
-        <h2 style="margin:0;">Confirm your concept map</h2>
+        <h2 style="margin:0;">{{ $t('onboarding.confirmMapTitle') }}</h2>
         <span class="spacer"></span>
-        <span class="badge user">Human-in-the-loop</span>
+        <span class="badge user">{{ $t('onboarding.humanInLoop') }}</span>
       </div>
-      <p class="muted">These concepts anchor your whole plan: diagnostics, tasks, evidence, and the agent's reasoning all link back to them. Rename, add, remove, or reorder — then confirm.</p>
+      <p class="muted">{{ $t('onboarding.confirmMapNote') }}</p>
 
-      <div v-if="extracting" class="empty" style="margin-top:16px;">Extracting concepts from your {{ goalForm.filename ? 'material' : 'goal' }}…</div>
+      <div v-if="extracting" class="empty" style="margin-top:16px;">
+        {{ $t('onboarding.extracting', { source: goalForm.filename ? $t('onboarding.material') : $t('onboarding.goalWord') }) }}
+      </div>
       <div v-else class="stack" style="margin-top:14px;">
         <div v-for="(c, i) in concepts" :key="i" class="concept-edit card" style="padding:12px 14px;">
           <div class="row">
             <button class="ghost" style="padding:4px 8px;" @click="moveConcept(i, -1)" title="Move up">↑</button>
             <button class="ghost" style="padding:4px 8px;" @click="moveConcept(i, +1)" title="Move down">↓</button>
-            <input v-model="c.canonical_term" placeholder="Canonical term (e.g. Normalization)" style="font-weight:600;" />
+            <input v-model="c.canonical_term" :placeholder="$t('onboarding.canonicalPlaceholder')" style="font-weight:600;" />
             <button class="ghost" style="padding:4px 8px;color:var(--danger)" @click="removeConcept(i)" title="Remove">✕</button>
           </div>
-          <input v-model="c.explanation" placeholder="Localized explanation (shown to you)" style="margin-top:8px;font-size:13px;" />
-          <div class="faint" style="font-size:11px;margin-top:4px;">source: {{ c.source }} · canonical term is preserved verbatim and used as the concept tag everywhere</div>
+          <input v-model="c.explanation" :placeholder="$t('onboarding.explanationPlaceholder')" style="margin-top:8px;font-size:13px;" />
+          <div class="faint" style="font-size:11px;margin-top:4px;">{{ $t('onboarding.sourceNote', { source: c.source }) }}</div>
         </div>
-        <button class="ghost" style="align-self:flex-start;" @click="addConcept">+ Add concept</button>
+        <button class="ghost" style="align-self:flex-start;" @click="addConcept">{{ $t('onboarding.addConcept') }}</button>
       </div>
 
       <div class="row" style="justify-content:space-between;margin-top:18px;">
-        <button @click="step = 2">← Back</button>
+        <button @click="step = 2">{{ $t('onboarding.back') }}</button>
         <button class="primary" :disabled="busy || !concepts.length" @click="confirmConcepts">
-          {{ busy ? 'Saving…' : 'Confirm concepts →' }}
+          {{ busy ? $t('onboarding.saving') : $t('onboarding.confirmConcepts') }}
         </button>
       </div>
     </section>
 
     <!-- ============ Screen 4: diagnostic ============ -->
     <section v-else-if="step === 4" class="card" style="padding:22px;">
-      <h2>Initial diagnostic</h2>
-      <p class="muted">A short concept-targeted quiz. Your answers give the first ability signal — an estimate, not a measurement.</p>
-      <div v-if="diagGenerating" class="empty" style="margin-top:16px;">Generating questions from your concepts…</div>
+      <h2>{{ $t('onboarding.diagnosticTitle') }}</h2>
+      <p class="muted">{{ $t('onboarding.diagnosticNote') }}</p>
+      <div v-if="diagGenerating" class="empty" style="margin-top:16px;">{{ $t('onboarding.generatingQuestions') }}</div>
       <div v-else-if="!diagResult" class="stack" style="margin-top:14px;">
         <div v-for="q in diag.questions" :key="q.id" class="q card" style="padding:14px;">
           <div class="row" style="gap:8px;">
@@ -386,35 +416,49 @@ onUnmounted(() => clearInterval(pollTimer))
           </div>
         </div>
         <div class="row" style="justify-content:space-between;margin-top:6px;">
-          <button @click="step = 3">← Back</button>
-          <button class="primary" :disabled="busy" @click="submitDiag">Submit diagnostic →</button>
+          <button @click="step = 3">{{ $t('onboarding.back') }}</button>
+          <button class="primary" :disabled="busy" @click="submitDiag">{{ $t('onboarding.submitDiagnostic') }}</button>
         </div>
       </div>
       <div v-else>
-        <div class="row"><span class="badge ok">Diagnostic complete</span></div>
+        <div class="row"><span class="badge ok">{{ $t('onboarding.diagnosticComplete') }}</span></div>
         <div class="stack" style="margin-top:12px;">
           <div v-for="c in concepts" :key="c.id" class="row">
             <ConceptTag :term="c.canonical_term" />
             <span class="spacer"></span>
-            <span class="muted">estimated mastery</span>
+            <span class="muted">{{ $t('onboarding.estimatedMastery') }}</span>
             <strong>{{ scorePct(c.id) }}%</strong>
           </div>
         </div>
-        <p class="faint" style="font-size:12px;margin-top:8px;">Mastery is a heuristic signal from a few questions — not a measurement.</p>
+        <p class="faint" style="font-size:12px;margin-top:8px;">{{ $t('onboarding.masteryDisclaimer') }}</p>
       </div>
     </section>
 
     <!-- ============ Screen 5: roadmap reveal ============ -->
     <section v-else-if="step === 5" class="card" style="padding:22px;">
-      <div class="eyebrow" style="color:var(--user);">Your roadmap · Version 1</div>
-      <h2 style="margin-top:4px;">Here's where to start</h2>
-      <div v-if="planGenerating" class="empty" style="margin-top:14px;">Generating your roadmap…</div>
-      <div v-else>
+      <div class="eyebrow" style="color:var(--user);">{{ $t('onboarding.roadmapEyebrow') }}</div>
+      <h2 style="margin-top:4px;">{{ $t('onboarding.roadmapTitle') }}</h2>
+      <div v-if="planGenerating" class="empty" style="margin-top:14px;">{{ $t('onboarding.generatingRoadmap') }}</div>
+
+      <!-- failure state: plan gen errored and we have no plan -->
+      <div v-else-if="error && !plan" class="card"
+           style="margin-top:14px;padding:16px;border-color:#f0cfc6;background:#fdf1ee;">
+        <strong style="color:var(--danger);">{{ $t('onboarding.roadmapFailedTitle') }}</strong>
+        <p class="muted" style="margin:8px 0 12px;">{{ friendlyPlanError }}</p>
+        <button class="primary" @click="generatePlan()">{{ $t('onboarding.retry') }}</button>
+      </div>
+
+      <!-- success state -->
+      <div v-else-if="plan && plan.tasks">
         <div v-if="diagResult" class="card" style="padding:10px 14px;background:var(--user-soft);border-color:#cfe9dd;margin-bottom:14px;">
-          <strong>Flagged weak concepts:</strong>
+          <strong>{{ $t('onboarding.weakConcepts') }}</strong>
           <span v-for="c in concepts.filter(c => scorePct(c.id) !== null && scorePct(c.id) < 60)" :key="c.id" style="margin-left:6px;">
             <ConceptTag :term="c.canonical_term" />
           </span>
+        </div>
+        <div v-if="plan.coverage_note" class="card"
+             style="padding:10px 14px;background:var(--surface-2);margin-bottom:14px;">
+          <span class="faint">{{ plan.coverage_note }}</span>
         </div>
         <div class="stack">
           <div v-for="t in plan.tasks" :key="t.id" class="task-row row" style="padding:10px 12px;">
@@ -427,7 +471,7 @@ onUnmounted(() => clearInterval(pollTimer))
           </div>
         </div>
         <div class="row" style="justify-content:flex-end;margin-top:18px;">
-          <button class="primary" @click="goToApp">Open my roadmap →</button>
+          <button class="primary" @click="goToApp">{{ $t('onboarding.openRoadmap') }}</button>
         </div>
       </div>
     </section>

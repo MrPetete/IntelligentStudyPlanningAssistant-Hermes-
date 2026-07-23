@@ -40,7 +40,7 @@ def seed(language: str = "en") -> int:
             user_id=SINGLE_USER_ID,
             goal_text="Pass my databases final",
             deadline="2026-08-10",
-            weekly_hours=6.0,
+            hours_per_day=1.0,
             explanation_language=language,
         )
         session.add(goal)
@@ -78,7 +78,7 @@ def seed(language: str = "en") -> int:
         # Roadmap Version 1 (user-created), validated implicitly by construction
         concept_dicts = [{"id": c.id, "canonical_term": c.canonical_term} for c in concepts]
         plan = llm_client.generate_plan(
-            goal={"deadline": goal.deadline, "weekly_hours": goal.weekly_hours},
+            goal={"deadline": goal.deadline, "hours_per_day": goal.hours_per_day},
             concepts=concept_dicts, scores={}, explanation_language=language,
         )
         # resolve concept_id from the mock plan (mock uses order-based ids)
