@@ -93,6 +93,74 @@ def test_no_trigger_when_all_signals_healthy():
 
 
 # ---------------------------------------------------------------------------
+# ahead_schedule trigger (A-V2-4 / B-f3)
+# ---------------------------------------------------------------------------
+def _healthy_evidence():
+    """>= min_evidence_events with nothing that would trip an earlier trigger."""
+    return [{"type": "task_done"}] * 3
+
+
+def test_ahead_schedule_fires_when_learner_is_ahead():
+    """Done 2 of 5 future tasks early (40% > 20%), nothing overdue -> ahead."""
+    result = evaluate_triggers(
+        progress={"tasks_due_by_today": 3, "tasks_incomplete_due": 0,
+                  "tasks_future": 5, "tasks_done_ahead": 2},
+        concept_mastery={1: 0.9},
+        recent_evidence=_healthy_evidence(),
+    )
+    assert result.fired is True
+    assert result.reason == "ahead_schedule"
+    assert result.detail["tasks_done_ahead"] == 2
+
+
+def test_ahead_schedule_does_not_fire_on_pace():
+    """No future work pulled forward -> on pace, no ahead trigger."""
+    result = evaluate_triggers(
+        progress={"tasks_due_by_today": 3, "tasks_incomplete_due": 0,
+                  "tasks_future": 5, "tasks_done_ahead": 0},
+        concept_mastery={1: 0.9},
+        recent_evidence=_healthy_evidence(),
+    )
+    assert result.fired is False
+    assert result.reason == "no_trigger"
+
+
+def test_ahead_schedule_does_not_fire_below_threshold():
+    """1 of 10 future done early = 10% <= 20% threshold -> not enough to fire."""
+    result = evaluate_triggers(
+        progress={"tasks_due_by_today": 5, "tasks_incomplete_due": 0,
+                  "tasks_future": 10, "tasks_done_ahead": 1},
+        concept_mastery={1: 0.9},
+        recent_evidence=_healthy_evidence(),
+    )
+    assert result.fired is False
+
+
+def test_ahead_schedule_suppressed_when_behind_on_due_work():
+    """Ahead on future work but with OVERDUE tasks -> behind wins, never ahead."""
+    result = evaluate_triggers(
+        progress={"tasks_due_by_today": 6, "tasks_incomplete_due": 4,  # 0.667 > 0.25 -> behind
+                  "tasks_future": 5, "tasks_done_ahead": 3},
+        concept_mastery={1: 0.9},
+        recent_evidence=_healthy_evidence(),
+    )
+    assert result.fired is True
+    assert result.reason == "behind_schedule"
+
+
+def test_ahead_schedule_respects_min_evidence_guard():
+    """Even clearly ahead, too little evidence blocks the trigger."""
+    result = evaluate_triggers(
+        progress={"tasks_due_by_today": 3, "tasks_incomplete_due": 0,
+                  "tasks_future": 5, "tasks_done_ahead": 4},
+        concept_mastery={1: 0.9},
+        recent_evidence=[{"type": "task_done"}],  # below min_evidence_events (3)
+    )
+    assert result.fired is False
+    assert result.reason == "insufficient_evidence"
+
+
+# ---------------------------------------------------------------------------
 # validator.validate_plan — the 5 rejection rules
 # ---------------------------------------------------------------------------
 def _valid_task(concept_id=1, day="2026-08-01", minutes=60):
@@ -208,6 +276,11 @@ ALL_TESTS = [
     test_low_mastery_fires_below_threshold,
     test_quiz_fail_fires_below_threshold,
     test_no_trigger_when_all_signals_healthy,
+    test_ahead_schedule_fires_when_learner_is_ahead,
+    test_ahead_schedule_does_not_fire_on_pace,
+    test_ahead_schedule_does_not_fire_below_threshold,
+    test_ahead_schedule_suppressed_when_behind_on_due_work,
+    test_ahead_schedule_respects_min_evidence_guard,
     test_validator_accepts_a_reasonable_plan,
     test_validator_rejects_zero_tasks,
     test_validator_rejects_overloaded_week,
