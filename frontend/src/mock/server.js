@@ -535,15 +535,22 @@ function route(method, path, body) {
   if (m === 'POST' && p === `/goals/${goalId}/checkpoint/submit`) {
     const diag = state.diagnostics.get(goalId)
     const per = {}
+    const perQuestion = []
+    // idx 0 ("Clearly defined" / "定义清晰") is the mock's designated correct
+    // option — mirrors the real backend's per-question breakdown (B-V2-1) so
+    // the checkpoint result screen has something to render in mock mode too.
     ;(body.answers || []).forEach((a) => {
       const q = diag?.questions?.find((x) => x.id === a.question_id)
       if (!q) return
       const idx = q.options.indexOf(a.choice)
       per[q.concept_id] = Math.max(0.2, 1 - idx * 0.25)
+      perQuestion.push({
+        question_id: q.id, submitted: a.choice, correct_choice: q.options[0], is_correct: idx === 0
+      })
     })
     const triggerFired = Object.values(per).some((s) => s < 0.5)
     if (triggerFired) scheduleReplan(goalId, 'quiz_fail', g.explanation_language)
-    return { per_concept_score: per, trigger_fired: triggerFired }
+    return { per_concept_score: per, trigger_fired: triggerFired, per_question: perQuestion }
   }
 
   // GET /goals/{id}/decisions
