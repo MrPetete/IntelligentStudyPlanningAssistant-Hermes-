@@ -27,6 +27,7 @@ from schemas import (
     DiagnosticQuestion,
     DiagnosticResult,
     DiagnosticSubmit,
+    PerQuestionResult,
 )
 
 router = APIRouter(prefix="/goals", tags=["diagnostic"])
@@ -54,6 +55,33 @@ def _score_answers(questions: list[dict], answers: dict[int, str]) -> dict[int, 
         bucket[0] += correct
         bucket[1] += 1
     return {cid: (c / t if t else 0.0) for cid, (c, t) in per_concept.items()}
+
+
+def _per_question_breakdown(
+    questions: list[dict], answers: dict[int, str]
+) -> list[dict]:
+    """Per-question right/wrong for the result screen (B-f1). Returns
+    [{question_id, submitted, correct_choice, is_correct}] with the correct
+    option TEXT resolved from the stored answer LETTER (safe to reveal now — the
+    quiz is over). Uses the SAME letter->text resolution and match rule as
+    `_score_answers` so the two never disagree."""
+    out: list[dict] = []
+    for q in questions:
+        submitted = answers.get(q["id"])
+        letter = (q.get("answer") or "").strip().upper()
+        options = q.get("options") or []
+        idx = ord(letter) - ord("A") if len(letter) == 1 and "A" <= letter <= "Z" else -1
+        correct_text = options[idx] if 0 <= idx < len(options) else None
+        is_correct = submitted is not None and submitted in (correct_text, letter)
+        out.append({
+            "question_id": q["id"],
+            "submitted": submitted,
+            # Prefer the resolved option text; fall back to the raw letter for the
+            # degenerate mock case where options are literally ["A","B","C","D"].
+            "correct_choice": correct_text if correct_text is not None else (letter or None),
+            "is_correct": is_correct,
+        })
+    return out
 
 
 @router.post("/{goal_id}/diagnostic", response_model=DiagnosticOut)
@@ -123,7 +151,8 @@ def submit_diagnostic(goal_id: int, body: DiagnosticSubmit,
             payload_json=json.dumps({"score": score, "source": "diagnostic"}, ensure_ascii=False),
         ))
     session.commit()
-    return DiagnosticResult(per_concept_score=scores)
+    breakdown = [PerQuestionResult(**pq) for pq in _per_question_breakdown(questions, answers)]
+    return DiagnosticResult(per_concept_score=scores, per_question=breakdown)
 
 
 # ===========================================================================
@@ -246,4 +275,5 @@ def submit_checkpoint(goal_id: int, body: CheckpointSubmit, background: Backgrou
     # Re-test signal goes through the SAME trigger gate + cooldown as everything
     # else; if it fires, the agent runs in the background (poll decisions).
     fired, _ = evaluate_and_schedule(session, goal_id, background)
-    return CheckpointResult(per_concept_score=scores, trigger_fired=fired)
+    breakdown = [PerQuestionResult(**pq) for pq in _per_question_breakdown(list(questions), answers)]
+    return CheckpointResult(per_concept_score=scores, trigger_fired=fired, per_question=breakdown)
