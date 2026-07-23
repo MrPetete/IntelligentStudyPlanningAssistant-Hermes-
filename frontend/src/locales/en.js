@@ -38,6 +38,10 @@ export default {
     startCheckpoint: 'Take checkpoint quiz →',
     checkpointPassed: 'Checkpoint passed — tomorrow is unlocked.',
     checkpointFailed: 'A few concepts need more work — the agent may adjust upcoming days.',
+    takeQuiz: 'Take quiz →',
+    viewResult: 'View result',
+    hideResult: 'Hide result',
+    quizLockedHint: 'Check off every task first',
     error: 'Error: {message}'
   },
   checkpoint: {

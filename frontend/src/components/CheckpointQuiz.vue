@@ -7,9 +7,14 @@ const props = defineProps({
   day: { type: String, default: null },
   // Remediation blocks span whatever days the agent picked, not one single
   // day — scope by their concepts directly instead (B-V2-2).
-  conceptIds: { type: Array, default: null }
+  conceptIds: { type: Array, default: null },
+  // A previously-saved result for this unit. When present, re-opening the
+  // panel shows it directly instead of generating a brand-new quiz — a
+  // checkpoint quiz should be a one-shot re-test per unit, not something
+  // that regenerates every time the toggle is clicked.
+  initialResult: { type: Object, default: null }
 })
-const emit = defineEmits(['done']) // done({ passed, per_concept_score, trigger_fired })
+const emit = defineEmits(['done']) // done({ passed, result }) — result is the full CheckpointResult
 
 const loading = ref(true)
 const submitting = ref(false)
@@ -20,7 +25,21 @@ const result = ref(null)
 
 const PASS_THRESHOLD = 0.5 // mirrors config.TRIGGERS.quiz_fail_threshold
 
+function passedFrom(res) {
+  const scores = Object.values(res.per_concept_score || {})
+  return scores.length === 0 || scores.every((s) => s >= PASS_THRESHOLD)
+}
+
 async function load() {
+  if (props.initialResult) {
+    // Already taken — show the saved result, no new quiz/network call.
+    // initialResult carries its own `questions` (saved alongside the result)
+    // so questionPrompt() below still has prompts to render.
+    checkpoint.value = { questions: props.initialResult.questions || [] }
+    result.value = props.initialResult
+    loading.value = false
+    return
+  }
   loading.value = true
   err.value = ''
   try {
@@ -46,10 +65,11 @@ async function submit() {
   try {
     const body = checkpoint.value.questions.map((q) => ({ question_id: q.id, choice: answers[q.id] }))
     const res = await api.submitCheckpoint(props.goalId, checkpoint.value.checkpoint_id, body)
-    result.value = res
-    const scores = Object.values(res.per_concept_score || {})
-    const passed = scores.length === 0 || scores.every((s) => s >= PASS_THRESHOLD)
-    emit('done', { passed, per_concept_score: res.per_concept_score, trigger_fired: res.trigger_fired })
+    // Persist the questions alongside the result so a later re-open of this
+    // unit's panel can render prompts without re-fetching (see load() above).
+    const full = { ...res, questions: checkpoint.value.questions }
+    result.value = full
+    emit('done', { passed: passedFrom(res), result: full })
   } catch (e) {
     err.value = e.message
   } finally {

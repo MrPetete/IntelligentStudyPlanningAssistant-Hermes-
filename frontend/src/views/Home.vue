@@ -14,8 +14,30 @@ const busy = ref(false)
 const toast = ref('')
 const loadError = ref(null)
 const updatingPlan = ref(false)   // non-blocking "a replan is queued" indicator
-const showCheckpoint = ref(false)
-const checkpointResult = ref(null)
+
+// Which unit's quiz panel is currently open (taking OR viewing a past result).
+// A Set so the toggle button per unit is independent of every other unit's.
+const expandedQuiz = ref(new Set())
+function toggleQuiz(unitKey) {
+  if (expandedQuiz.value.has(unitKey)) expandedQuiz.value.delete(unitKey)
+  else expandedQuiz.value.add(unitKey)
+}
+
+// A finished checkpoint's full result (scores + per-question breakdown),
+// keyed by unit — persisted so re-opening the panel re-shows the real result
+// instead of re-generating a fresh quiz or losing it on navigation/refresh.
+function resultsStorageKey() { return `tl_checkpoint_results_${store.goalId}` }
+function loadCheckpointResults() {
+  try { return JSON.parse(localStorage.getItem(resultsStorageKey()) || '{}') }
+  catch { return {} }
+}
+function saveCheckpointResult(unitKey, result) {
+  const all = loadCheckpointResults()
+  all[unitKey] = result
+  localStorage.setItem(resultsStorageKey(), JSON.stringify(all))
+  checkpointResults.value = all
+}
+const checkpointResults = ref({})
 
 const versionNo = computed(() => store.currentPlan?.version_no ?? 1)
 
@@ -69,6 +91,7 @@ async function load() {
     await refreshVersions(store.goalId)
     tasks.value = store.currentPlan ? [...store.currentPlan.tasks] : []
     clearedDays.value = loadClearedDays()
+    checkpointResults.value = loadCheckpointResults()
     await loadRemediationBlocks()
   } catch (e) {
     // B-RC2-3: a failed load must not render as "0 tasks" — keep whatever was
@@ -137,12 +160,17 @@ function unitIndex(key) { return units.value.findIndex((u) => u.key === key) }
 function isDayLocked(key) { return activeUnit.value !== null && unitIndex(key) > unitIndex(activeUnit.value) }
 function isDayActive(key) { return key === activeUnit.value }
 
-const activeUnitObj = computed(() => units.value.find((u) => u.key === activeUnit.value))
-const activeDayAllDone = computed(() =>
-  !!activeUnitObj.value && activeUnitObj.value.tasks.length > 0 &&
-  activeUnitObj.value.tasks.every((t) => t.status === 'done'))
-const activeDayNeedsCheckpoint = computed(() =>
-  activeDayAllDone.value && activeUnit.value && !clearedDays.value.has(activeUnit.value))
+// A unit's quiz button unlocks purely on "all of this unit's own tasks are
+// done" — independent of the day-locking sequence, so a learner can revisit
+// an already-cleared earlier unit's result at any time, and a later unit's
+// button unlocks the moment ITS tasks are done even if an earlier unit's
+// checkpoint hasn't happened yet (checkpoint completion, not the checkbox
+// gate, is what advances activeUnit — see activeUnit above).
+function unitAllDone(u) { return u.tasks.length > 0 && u.tasks.every((t) => t.status === 'done') }
+function quizLabel(u) {
+  if (expandedQuiz.value.has(u.key)) return t('home.hideResult')
+  return checkpointResults.value[u.key] ? t('home.viewResult') : t('home.takeQuiz')
+}
 
 // A task may live in a day OR a remediation block — resolve which unit key
 // gates it so checkOff/undoCheck stay a single code path for both.
@@ -203,14 +231,13 @@ async function undoCheck(task) {
   } finally { busy.value = false }
 }
 
-function onCheckpointDone({ passed, trigger_fired }) {
-  markDayCleared(activeUnit.value)
+function onCheckpointDone(unitKey, { passed, result }) {
+  saveCheckpointResult(unitKey, result)
+  markDayCleared(unitKey)
   clearedDays.value = loadClearedDays()
-  checkpointResult.value = passed
-  showCheckpoint.value = false
   toast.value = passed ? t('home.checkpointPassed') : t('home.checkpointFailed')
   setTimeout(() => (toast.value = ''), 4000)
-  if (trigger_fired) watchForReplan()
+  if (result?.trigger_fired) watchForReplan()
 }
 
 async function simulate() {
@@ -288,20 +315,21 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
         <span class="spacer"></span>
         <span class="faint">{{ t.est_minutes }} min</span>
       </div>
-    </div>
 
-    <div v-if="activeDayNeedsCheckpoint && !showCheckpoint" class="card" style="padding:16px;background:var(--user-soft);border-color:#cfe9dd;margin-bottom:16px;">
-      <div class="row">
-        <span>✅ {{ activeUnitObj?.kind === 'remediation' ? $t('home.remediationComplete') : $t('home.dayComplete') }}</span>
+      <div class="row quiz-toggle-row">
         <span class="spacer"></span>
-        <button class="primary" @click="showCheckpoint = true">{{ $t('home.startCheckpoint') }}</button>
+        <span v-if="!unitAllDone(u)" class="faint" style="font-size:12px;">{{ $t('home.quizLockedHint') }}</span>
+        <button class="primary" :disabled="!unitAllDone(u)" @click="toggleQuiz(u.key)">
+          {{ quizLabel(u) }}
+        </button>
       </div>
-    </div>
 
-    <CheckpointQuiz v-if="showCheckpoint" :goal-id="store.goalId"
-                    :day="activeUnitObj?.kind === 'remediation' ? null : activeUnit"
-                    :concept-ids="activeUnitObj?.kind === 'remediation' ? activeUnitObj.conceptIds : null"
-                    @done="onCheckpointDone" />
+      <CheckpointQuiz v-if="expandedQuiz.has(u.key)" :goal-id="store.goalId"
+                      :day="u.kind === 'remediation' ? null : u.key"
+                      :concept-ids="u.kind === 'remediation' ? u.conceptIds : null"
+                      :initial-result="checkpointResults[u.key]"
+                      @done="(payload) => onCheckpointDone(u.key, payload)" />
+    </div>
 
     <div class="row" style="justify-content:flex-end;margin-top:18px;">
       <button @click="simulate" :disabled="busy">{{ $t('home.simulate') }}</button>
@@ -313,6 +341,7 @@ const done = computed(() => tasks.value.filter((t) => t.status === 'done'))
 .day-card.locked { opacity: .55; }
 .day-card.remediation { border-color: #f0cfc6; }
 .day-head { padding: 8px 6px 4px; }
+.quiz-toggle-row { padding: 10px 12px; gap: 10px; align-items: center; border-top: 1px solid var(--border); }
 .task-row { padding: 12px; gap: 12px; border-bottom: 1px solid var(--border); }
 .task-row:last-child { border-bottom: 0; }
 .task-row.locked { pointer-events: none; }
