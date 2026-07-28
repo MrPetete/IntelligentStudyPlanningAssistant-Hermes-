@@ -142,7 +142,7 @@ function questionPrompt(questionId) {
 
 <style scoped>
 .q { background: var(--surface); }
-.question-result.correct { border-color: #b7dfc4; background: var(--user-soft, #f0f9f3); }
-.question-result.incorrect { border-color: #f0c6c6; background: var(--agent-soft, #fbeeee); }
-.badge.bad { background: #f8d7d7; color: #a33a3a; }
+.question-result.correct { border-color: var(--user); background: var(--user-soft); }
+.question-result.incorrect { border-color: var(--danger); background: var(--danger-soft); }
+.badge.bad { background: var(--danger-soft); color: var(--danger); }
 </style>

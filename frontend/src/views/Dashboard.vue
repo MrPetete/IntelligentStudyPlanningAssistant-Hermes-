@@ -77,15 +77,20 @@ function render() {
   const terms = conceptMeta.value.map((c) => c.canonical_term)
   const vals = conceptMeta.value.map((c) => Math.round((mastery.value[c.id] || 0) * 100))
   masterChart.value?.setOption({
-    title: { text: t('dashboard.masteryTitle'), left: 0, textStyle: { fontSize: 14, color: '#1b2430' } },
+    title: { text: t('dashboard.masteryTitle'), left: 0, textStyle: { fontSize: 14, color: '#241a10' } },
     tooltip: { valueFormatter: (v) => t('dashboard.masteryTooltip', { value: v }) },
     grid: { left: 8, right: 16, top: 40, bottom: 8, containLabel: true },
-    xAxis: { type: 'category', data: terms, axisLabel: { interval: 0, fontSize: 11 } },
+    xAxis: {
+      type: 'category', data: terms,
+      axisLabel: { interval: 0, fontSize: 11, rotate: terms.length > 6 ? 20 : 0 }
+    },
     yAxis: { type: 'value', max: 100 },
     series: [{
       type: 'bar', data: vals, barWidth: '46%',
       itemStyle: {
-        color: (p) => p.value < 60 ? '#c0563b' : (p.value < 80 ? '#b5852b' : '#2f8f6b'),
+        // All-orange scale: low mastery renders faint/pale, high mastery
+        // renders full-strength brand orange — no other hue in the chart.
+        color: (p) => p.value < 60 ? '#ffc588' : (p.value < 80 ? '#ffab52' : '#ff8100'),
         borderRadius: [6, 6, 0, 0]
       },
       label: { show: true, position: 'top', formatter: '{c}%' }
@@ -97,14 +102,14 @@ function render() {
   const done = tasks.filter((t) => t.status === 'done').length
   const pct = tasks.length ? Math.round((done / tasks.length) * 100) : 0
   progressChart.value?.setOption({
-    title: { text: t('dashboard.progressTitle'), left: 0, textStyle: { fontSize: 14, color: '#1b2430' } },
+    title: { text: t('dashboard.progressTitle'), left: 0, textStyle: { fontSize: 14, color: '#241a10' } },
     series: [{
       type: 'gauge', startAngle: 210, endAngle: -30, min: 0, max: 100, radius: '92%', center: ['50%', '62%'],
-      progress: { show: true, width: 14, itemStyle: { color: '#3b6fb0' } },
-      axisLine: { lineStyle: { width: 14, color: [[1, '#e2e6ec']] } },
+      progress: { show: true, width: 14, itemStyle: { color: '#ff8100' } },
+      axisLine: { lineStyle: { width: 14, color: [[1, '#ffe0bd']] } },
       pointer: { show: false }, axisTick: { show: false }, splitLine: { show: false },
       axisLabel: { show: false },
-      detail: { valueAnimation: true, fontSize: 30, offsetCenter: [0, '5%'], formatter: '{value}%', color: '#1b2430' },
+      detail: { valueAnimation: true, fontSize: 30, offsetCenter: [0, '5%'], formatter: '{value}%', color: '#241a10' },
       data: [{ value: pct }]
     }]
   })
@@ -112,15 +117,15 @@ function render() {
   // 3. Tasks done over time — now genuinely per-version (see load()).
   const days = versions.value.map((v) => 'v' + v.version_no)
   trendChart.value?.setOption({
-    title: { text: t('dashboard.trendTitle'), left: 0, textStyle: { fontSize: 14, color: '#1b2430' } },
+    title: { text: t('dashboard.trendTitle'), left: 0, textStyle: { fontSize: 14, color: '#241a10' } },
     tooltip: { trigger: 'axis' },
     grid: { left: 8, right: 16, top: 40, bottom: 8, containLabel: true },
     xAxis: { type: 'category', data: days, boundaryGap: false },
     yAxis: { type: 'value', minInterval: 1 },
     series: [{
       type: 'line', smooth: true, data: donePerVersion.value,
-      lineStyle: { width: 3, color: '#2f8f6b' }, itemStyle: { color: '#2f8f6b' },
-      areaStyle: { color: 'rgba(47,143,107,.12)' }
+      lineStyle: { width: 3, color: '#ff8100' }, itemStyle: { color: '#ff8100' },
+      areaStyle: { color: 'rgba(255,129,0,.12)' }
     }]
   })
 }
@@ -141,11 +146,11 @@ watch(() => store.goalId, load)
     <OfflineBanner :error="loadError" @retry="load" />
 
     <template v-if="!loadError">
-      <div class="grid">
-        <div class="card chart-card"><div ref="masterEl" class="chart"></div></div>
+      <div class="card chart-card wide"><div ref="masterEl" class="chart"></div></div>
+      <div class="grid" style="margin-top:16px;">
         <div class="card chart-card"><div ref="progressEl" class="chart"></div></div>
+        <div class="card chart-card"><div ref="trendEl" class="chart"></div></div>
       </div>
-      <div class="card chart-card" style="margin-top:16px;"><div ref="trendEl" class="chart"></div></div>
 
       <div v-if="!conceptMeta.length" class="empty" style="margin-top:16px;">
         {{ $t('dashboard.noData') }}
@@ -157,6 +162,8 @@ watch(() => store.goalId, load)
 <style scoped>
 .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .chart-card { padding: 12px; }
+.chart-card.wide { padding: 16px; }
 .chart { width: 100%; height: 280px; }
+.chart-card.wide .chart { height: 320px; }
 @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
 </style>

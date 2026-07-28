@@ -60,7 +60,26 @@ async function onLanguageChange(lang) {
 <template>
   <div class="app-shell" v-if="ready">
     <aside v-if="showShell" class="sidebar">
-      <div class="brand">{{ $t('app.brand') }}<small>{{ $t('app.tagline') }}</small></div>
+      <div class="brand">
+        <svg class="brand-logo" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+          <circle cx="16" cy="17" r="13" fill="var(--brand)"/>
+          <circle cx="16" cy="17" r="13" fill="url(#tangerine-shine)"/>
+          <path d="M16 4c1.6 0 2.6 1.7 2.6 3.4" stroke="var(--brand-soft)" stroke-width="1.6" stroke-linecap="round"/>
+          <g stroke="var(--brand-dark)" stroke-width="1" opacity=".55" stroke-linecap="round">
+            <line x1="16" y1="6" x2="16" y2="28"/>
+            <line x1="6" y1="17" x2="26" y2="17"/>
+            <line x1="8.7" y1="9.7" x2="23.3" y2="24.3"/>
+            <line x1="23.3" y1="9.7" x2="8.7" y2="24.3"/>
+          </g>
+          <defs>
+            <radialGradient id="tangerine-shine" cx="35%" cy="30%" r="65%">
+              <stop offset="0%" stop-color="#ffb347" stop-opacity=".9"/>
+              <stop offset="100%" stop-color="var(--brand)" stop-opacity="0"/>
+            </radialGradient>
+          </defs>
+        </svg>
+        <div class="brand-text">{{ $t('app.brand') }}<small>{{ $t('app.tagline') }}</small></div>
+      </div>
       <router-link v-for="n in nav" :key="n.to" :to="n.to" class="nav-item" active-class="active">
         <span class="ico">{{ n.ico }}</span>{{ n.label }}
       </router-link>
@@ -87,10 +106,11 @@ async function onLanguageChange(lang) {
         <div class="muted" style="margin-top:4px;">{{ goalText }}</div>
         <div class="row" style="margin-top:8px;gap:8px;align-items:center;">
           <span class="faint">{{ $t('app.language') }}:</span>
-          <button class="ghost lang-btn" :class="{ primary: store.goal?.explanation_language === 'en' }"
-                  @click="onLanguageChange('en')">EN</button>
-          <button class="ghost lang-btn" :class="{ primary: store.goal?.explanation_language === 'zh' }"
-                  @click="onLanguageChange('zh')">中文</button>
+          <div class="switch" @click="onLanguageChange(store.goal?.explanation_language === 'en' ? 'zh' : 'en')">
+            <span class="switch-thumb" :style="{ transform: store.goal?.explanation_language === 'zh' ? 'translateX(100%)' : 'translateX(0)' }"></span>
+            <span class="switch-option" :class="{ active: store.goal?.explanation_language !== 'zh' }">EN</span>
+            <span class="switch-option" :class="{ active: store.goal?.explanation_language === 'zh' }">中文</span>
+          </div>
         </div>
       </div>
     </aside>

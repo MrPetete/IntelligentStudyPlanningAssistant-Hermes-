@@ -114,7 +114,7 @@ function decisionForVersion(vid) {
             <span class="muted">{{ note }}</span>
           </div>
           <div v-if="diff._rescheduled?.length" class="row" style="gap:10px;">
-            <span class="concept-tag" style="background:var(--warn-soft);color:var(--warn);border-color:#ecdcb4;">
+            <span class="concept-tag" style="background:var(--warn-soft);color:var(--warn);border-color:var(--warn);">
               <span class="dot" style="background:var(--warn)"></span>{{ $t('history.rescheduled') }}
             </span>
             <span class="muted">{{ $t('history.rescheduledCount', { n: diff._rescheduled.length }) }}</span>
@@ -172,7 +172,7 @@ function decisionForVersion(vid) {
 .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .drow { display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 8px; margin-bottom: 6px; background: var(--surface-2); }
 .drow.added { background: var(--user-soft); }
-.drow.removed { background: #fbeceb; }
+.drow.removed { background: var(--danger-soft); }
 .strike { text-decoration: line-through; color: var(--text-faint); }
 @media (max-width: 760px) { .diff-grid { grid-template-columns: 1fr; } }
 </style>

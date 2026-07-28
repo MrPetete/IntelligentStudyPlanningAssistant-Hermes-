@@ -26,7 +26,7 @@ function phaseOf(tool) {
 }
 const PHASE_META = {
   read:   { label: 'READ',     color: 'var(--brand)',     soft: 'var(--brand-soft)',     icon: '📥' },
-  reason: { label: 'REASON',   color: 'var(--accent)',    soft: '#efeaf9',               icon: '🧠' },
+  reason: { label: 'REASON',   color: 'var(--accent)',    soft: 'var(--brand-soft)',     icon: '🧠' },
   act:    { label: 'ACT',      color: 'var(--agent)',     soft: 'var(--agent-soft)',     icon: '✏️' },
   record: { label: 'RECORD',   color: 'var(--user)',      soft: 'var(--user-soft)',      icon: '📝' }
 }
@@ -114,9 +114,9 @@ function fmtDate(s) { try { return new Date(s).toLocaleString() } catch { return
         </div>
 
         <!-- 3. Reasoning — prominent, always shown -->
-        <div class="card block" :style="decision.decision === 'new_version' ? 'background:var(--agent-soft);border-color:#f0cfc6' : ''">
+        <div class="card block" :style="decision.decision === 'new_version' ? 'background:var(--agent-soft);border-color:var(--agent)' : ''">
           <div class="row">
-            <span class="step-ico" style="background:#efeaf9;color:var(--accent)">🧠</span>
+            <span class="step-ico" style="background:var(--brand-soft);color:var(--accent)">🧠</span>
             <div>
               <div class="label">{{ $t('decision.reasoningLabel') }}</div>
               <div class="reasoning" style="font-size:15px;line-height:1.7;margin-top:4px;">{{ decision.reasoning_text }}</div>
